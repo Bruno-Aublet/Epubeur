@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+*.epub
+*.epbz.tmp
+.claude/
+.vscode/
+RELEASE.txt
+METADATA_GAPS.txt
