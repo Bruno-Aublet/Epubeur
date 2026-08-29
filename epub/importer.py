@@ -14,9 +14,23 @@ from model.book_metadata import BookMetadata, Contributor
 from model.document import Chapter, Document, LockedFont, LockedFontFile, Paragraph, Part, iter_all_paragraphs, new_id
 from model.styles import ParagraphKind
 
-ROUND_TRIP_CHAPTER_ID_ATTR = 'data-epubeur-chapter-id="'
-ROUND_TRIP_SEGMENT_INDEX_ATTR = 'data-epubeur-segment-index="'
-PART_TITLE_PAGE_MARKER = 'data-epubeur-part-title="1"'
+# Ancré sur le contexte exact émis par epub/html_render.py (<h1 data-epubeur-part-title="1">),
+# jamais une simple sous-chaîne — même raison que _ROUND_TRIP_DIV_RE ci-dessous (un chapitre dont
+# le texte contient littéralement ce marqueur en HTML échappé le ferait classer à tort comme
+# page de garde de partie plutôt qu'un vrai chapitre).
+_PART_TITLE_PAGE_RE = re.compile(r'<h1\s+data-epubeur-part-title="1">')
+# Ancré sur le contexte exact émis par epub/html_render.py (<div class="epubeur-chapter"
+# data-epubeur-chapter-id="..."[ data-epubeur-segment-index="..."]>) plutôt qu'une simple
+# recherche de sous-chaîne — sans cet ancrage, un chapitre dont le TEXTE contient littéralement
+# ce marqueur en HTML échappé (ex. un livre technique documentant ce format) le ferait extraire à
+# tort comme un vrai marqueur de round-trip, avec un risque concret de fusion silencieuse de deux
+# chapitres distincts partageant le même texte technique en exemple. Un seul regex pour les deux
+# attributs (plutôt que deux recherches indépendantes) : ils sont toujours émis ensemble sur le
+# même <div>, capturer les deux d'un coup garantit qu'ils restent cohérents entre eux.
+_ROUND_TRIP_DIV_RE = re.compile(
+    r'<div\s+class="epubeur-chapter"\s+data-epubeur-chapter-id="([^"]*)"'
+    r'(?:\s+data-epubeur-segment-index="(\d+)")?'
+)
 LOCKED_FONT_CLASS_PREFIX = "epubeur-locked-font-"
 
 
@@ -67,7 +81,9 @@ def _extract_locked_fonts(epub_path: Path, css_texts: list[str], css_resolver: C
             book_uid = None
             if opf_candidates:
                 opf_text = zf.read(opf_candidates[0]).decode("utf-8", errors="replace")
-                match = re.search(r"<dc:identifier[^>]*>(urn:uuid:[^<]+)</dc:identifier>", opf_text)
+                match = re.search(
+                    r"<dc:identifier[^>]*>(urn:(?:uuid|isbn):[^<]+)</dc:identifier>", opf_text
+                )
                 if match:
                     book_uid = match.group(1)
 
@@ -221,37 +237,26 @@ def _extract_book_metadata(book: "epub.EpubBook") -> BookMetadata:
 
 
 def _extract_round_trip_chapter_id(xhtml: str) -> str | None:
-    idx = xhtml.find(ROUND_TRIP_CHAPTER_ID_ATTR)
-    if idx == -1:
-        return None
-    start = idx + len(ROUND_TRIP_CHAPTER_ID_ATTR)
-    end = xhtml.find('"', start)
-    if end == -1:
-        return None
-    return xhtml[start:end]
+    match = _ROUND_TRIP_DIV_RE.search(xhtml)
+    return match.group(1) if match else None
 
 
 def _extract_round_trip_segment_index(xhtml: str) -> int:
     """Absence du marqueur = segment 0 (premier/unique segment) — cf. html_render.chapter_to_xhtml
     qui n'émet ce marqueur que pour segment_index > 0."""
-    idx = xhtml.find(ROUND_TRIP_SEGMENT_INDEX_ATTR)
-    if idx == -1:
+    match = _ROUND_TRIP_DIV_RE.search(xhtml)
+    if match is None or match.group(2) is None:
         return 0
-    start = idx + len(ROUND_TRIP_SEGMENT_INDEX_ATTR)
-    end = xhtml.find('"', start)
-    if end == -1:
-        return 0
-    try:
-        return int(xhtml[start:end])
-    except ValueError:
-        return 0
+    return int(match.group(2))
 
 
 def _extract_title_text(xhtml: str) -> str:
     import re
     from html import unescape
 
-    match = re.search(r'data-epubeur-chapter-title="1">(.*?)</h1>', xhtml, re.DOTALL)
+    # <h1 littéral exigé avant l'attribut (pas seulement une recherche de sous-chaîne) : même
+    # raison que _ROUND_TRIP_DIV_RE/_PART_TITLE_PAGE_RE ci-dessus.
+    match = re.search(r'<h1\s+data-epubeur-chapter-title="1">(.*?)</h1>', xhtml, re.DOTALL)
     if match:
         # symétrique de html_render.title_html_block : les <br/> insérés pour un saut de
         # ligne manuel redeviennent '\n' au réimport, plutôt que du texte littéral "<br/>".
@@ -286,7 +291,7 @@ def import_epub(path: Path, asset_store: AssetStore) -> tuple[Document, BookMeta
         # physique dans le zip (qui est désormais un nom lisible, cf. epub/builder.py). Comme le
         # contenu binaire n'a pas changé, asset.id (hash recalculé par ingest_bytes ci-dessus) lui
         # est forcément identique : l'indexer directement est donc la clé de résolution fiable et
-        # prioritaire (cf. html_normalize._find_image_anchor), indépendante du nom de fichier.
+        # prioritaire (cf. html_normalize._find_all_image_anchors), indépendante du nom de fichier.
         href_to_asset_id[asset.id] = asset.id
 
     document = Document()
@@ -306,7 +311,7 @@ def import_epub(path: Path, asset_store: AssetStore) -> tuple[Document, BookMeta
             continue
         xhtml = item.get_content().decode("utf-8", errors="replace")
 
-        if PART_TITLE_PAGE_MARKER in xhtml:
+        if _PART_TITLE_PAGE_RE.search(xhtml):
             # Page de garde de partie (cf. epub/html_render.part_title_page_to_xhtml) : ce
             # n'est pas un chapitre, elle ne doit pas apparaître dans document.chapters —
             # import_toc_structure la retrouvera via ce même href pour positionner
@@ -323,13 +328,15 @@ def import_epub(path: Path, asset_store: AssetStore) -> tuple[Document, BookMeta
         paragraphs, local_footnotes, local_image_wraps = html_to_paragraphs(xhtml, css_resolver)
 
         for para in iter_all_paragraphs(paragraphs):
-            if para.image is not None:
-                resolved = href_to_asset_id.get(para.image.asset_id) or href_to_asset_id.get(
-                    Path(para.image.asset_id).name)
+            resolved_images = []
+            for image in para.all_images():
+                resolved = href_to_asset_id.get(image.asset_id) or href_to_asset_id.get(
+                    Path(image.asset_id).name)
                 if resolved:
-                    para.image.asset_id = resolved
-                else:
-                    para.image = None
+                    image.asset_id = resolved
+                    resolved_images.append(image)
+            para.image = resolved_images[0] if resolved_images else None
+            para.extra_images = resolved_images[1:]
 
         # "premier gagne" à travers tous les segments réimportés, cohérent avec la lecture ODT
         # (cf. odt/chapter_detector.py) — un habillage déjà connu pour cet asset_id n'est jamais
@@ -382,7 +389,7 @@ def import_epub(path: Path, asset_store: AssetStore) -> tuple[Document, BookMeta
             title_visible=bool(title),
             paragraphs=merged_paragraphs,
         )
-        pov_images = [p.image.asset_id for p in iter_all_paragraphs(merged_paragraphs) if p.image is not None]
+        pov_images = [image.asset_id for p in iter_all_paragraphs(merged_paragraphs) for image in p.all_images()]
         if pov_images:
             chapter.pov_image_asset_id = pov_images[0]
 

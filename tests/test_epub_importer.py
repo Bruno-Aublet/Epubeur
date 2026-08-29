@@ -60,6 +60,66 @@ def test_round_trip_preserves_chapter_ids_and_titles(tmp_path):
     assert titles == {"Chapitre un", "Chapitre deux"}
 
 
+def test_round_trip_marker_in_body_text_of_external_epub_does_not_corrupt_id(tmp_path):
+    """Régression : _extract_round_trip_chapter_id cherchait le marqueur data-epubeur-chapter-id
+    par simple sous-chaîne, sans exiger le contexte <div class="epubeur-chapter" ...> réel dans
+    lequel epub/html_render.py l'émet toujours. Pour un EPUB EXTERNE (jamais généré par Epubeur,
+    donc sans vrai marqueur), un chapitre dont le TEXTE contient littéralement ce marqueur en
+    HTML échappé (ex. un livre technique documentant ce format) le faisait extraire à tort comme
+    un vrai marqueur de round-trip — si deux chapitres distincts du même livre externe
+    contenaient chacun ce même exemple technique, ils fusionnaient silencieusement en un seul à
+    l'import (même chapter_id extrait des deux), perdant la distinction entre eux."""
+    import zipfile
+
+    poisoned_snippet = '&lt;div class="epubeur-chapter" data-epubeur-chapter-id="peu-importe"&gt;'
+    external_dir_content = {
+        "mimetype": "application/epub+zip",
+        "META-INF/container.xml": """<?xml version="1.0"?>
+<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
+  <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>""",
+        "OEBPS/content.opf": """<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">urn:uuid:external-test-2</dc:identifier>
+    <dc:title>Livre externe technique</dc:title>
+    <dc:language>fr</dc:language>
+  </metadata>
+  <manifest>
+    <item id="c1" href="chap1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="c2" href="chap2.xhtml" media-type="application/xhtml+xml"/>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+  </manifest>
+  <spine><itemref idref="c1"/><itemref idref="c2"/></spine>
+</package>""",
+        "OEBPS/nav.xhtml": """<?xml version="1.0"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<body><nav epub:type="toc"><ol>
+<li><a href="chap1.xhtml">Un</a></li><li><a href="chap2.xhtml">Deux</a></li>
+</ol></nav></body></html>""",
+        "OEBPS/chap1.xhtml": f"""<?xml version="1.0"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<body><h1>Chapitre Un</h1><p>Exemple de code : {poisoned_snippet}</p></body></html>""",
+        "OEBPS/chap2.xhtml": f"""<?xml version="1.0"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<body><h1>Chapitre Deux</h1><p>Même exemple repris ici : {poisoned_snippet}</p></body></html>""",
+    }
+
+    epub_path = tmp_path / "external_technical_book.epub"
+    with zipfile.ZipFile(epub_path, "w") as zf:
+        for name, content in external_dir_content.items():
+            zf.writestr(name, content)
+
+    asset_store = AssetStore(tmp_path / "assets")
+    document, _imported_metadata, warnings = import_epub(epub_path, asset_store)
+
+    # Sans le correctif, les deux fichiers XHTML extrayaient le même chapter_id "peu-importe"
+    # depuis leur texte respectif et fusionnaient en un seul Chapter : toujours 2 chapitres
+    # distincts attendu ici.
+    assert len(document.chapters) == 2
+    assert "peu-importe" not in document.chapters
+
+
 def test_round_trip_preserves_part_structure(tmp_path):
     epub_path = _generate_reference_epub(tmp_path)
     asset_store = AssetStore(tmp_path / "assets_import")

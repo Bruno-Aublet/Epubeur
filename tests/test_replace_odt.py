@@ -50,6 +50,19 @@ TWO_CHAPTERS_CORRECTED_XML = f"""<?xml version="1.0" encoding="UTF-8"?>
 </office:document-content>
 """
 
+TWO_CHAPTERS_SWAPPED_XML = f"""<?xml version="1.0" encoding="UTF-8"?>
+<office:document-content {NS_ATTRS}>
+  <office:body>
+    <office:text>
+      <text:h text:style-name="Heading_20_1" text:outline-level="1">Chapitre Deux (brut)</text:h>
+      <text:p>Texte du second chapitre, version originale.</text:p>
+      <text:h text:style-name="Heading_20_1" text:outline-level="1">Chapitre Un (brut)</text:h>
+      <text:p>Texte du premier chapitre, version originale.</text:p>
+    </office:text>
+  </office:body>
+</office:document-content>
+"""
+
 THREE_CHAPTERS_XML = f"""<?xml version="1.0" encoding="UTF-8"?>
 <office:document-content {NS_ATTRS}>
   <office:body>
@@ -278,6 +291,46 @@ def test_replace_odt_fewer_new_chapters_deletes_extra_old_and_warns(tmp_path):
         assert old_id not in controller.project.document.chapters
     assert old_ids[1] not in controller.project.document.structure.all_referenced_chapter_ids()
     assert any("1 chapitre" in w and "2" in w for w in warnings)
+
+
+def test_replace_odt_warns_when_same_count_but_chapters_reordered(tmp_path):
+    """Régression : si l'utilisateur permute deux chapitres dans Writer puis réimporte via
+    « remplacer », le nombre de chapitres reste identique (2 -> 2), donc l'avertissement sur un
+    changement de nombre ne se déclenche jamais — alors que l'appariement par position colle
+    silencieusement le titre de l'ancien chapitre 1 sur le texte qui est en fait l'ancien
+    chapitre 2, et vice-versa."""
+    controller = ProjectController()
+    fixture = _make_fixture(tmp_path, TWO_CHAPTERS_XML, "book.odt")
+    entry = controller.import_odt(fixture)
+    old_ids = list(entry.chapter_ids)
+
+    controller.project.document.chapters[old_ids[0]].title = "Mon titre personnalisé un"
+    controller.project.document.chapters[old_ids[1]].title = "Mon titre personnalisé deux"
+
+    warnings: list[str] = []
+    controller.warning_occurred.connect(warnings.append)
+
+    _write_content(fixture, TWO_CHAPTERS_SWAPPED_XML)
+    controller.replace_odt(fixture)
+
+    assert len(entry.chapter_ids) == 2
+    assert any("ordre différent" in w for w in warnings)
+
+
+def test_replace_odt_does_not_warn_about_reorder_when_chapters_only_corrected(tmp_path):
+    """Pas de faux positif : un simple texte corrigé/reformulé (sans permutation) ne doit pas
+    déclencher l'avertissement d'ordre différent — seule une vraie permutation le doit."""
+    controller = ProjectController()
+    fixture = _make_fixture(tmp_path, TWO_CHAPTERS_XML, "book.odt")
+    controller.import_odt(fixture)
+
+    warnings: list[str] = []
+    controller.warning_occurred.connect(warnings.append)
+
+    _write_content(fixture, TWO_CHAPTERS_CORRECTED_XML)
+    controller.replace_odt(fixture)
+
+    assert not any("ordre différent" in w for w in warnings)
 
 
 def test_replace_odt_undo_restores_pre_replace_state(tmp_path):

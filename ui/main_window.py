@@ -16,6 +16,7 @@ from model.recent_files import (
     remove_recent_project,
     set_last_project_dir,
 )
+from model.update_checker import UpdateChecker
 from model.version import __version__
 from ui.cover_panel import CoverPanel
 from ui.epub_preview import EpubPreview
@@ -23,8 +24,10 @@ from ui.font_selector import FontSelector
 from ui.generate_panel import GeneratePanel
 from ui.image_gallery import ImageGallery
 from ui.about_dialog import AboutDialog
+from ui.changelog_dialog import ChangelogDialog
 from ui.import_panel import ImportPanel, dispatch_odt_import
 from ui.structure_editor import StructureEditor
+from ui.update_dialog import UpdateAvailableDialog
 
 
 class MainWindow(QMainWindow):
@@ -109,6 +112,10 @@ class MainWindow(QMainWindow):
         help_menu = self.menuBar().addMenu("Aide")
         github_action = help_menu.addAction("Dépôt GitHub")
         github_action.triggered.connect(self._open_github_repo)
+        changelog_action = help_menu.addAction("Historique des versions")
+        changelog_action.triggered.connect(self._show_changelog_dialog)
+        self.update_action = help_menu.addAction("Vérifier les mises à jour")
+        self.update_action.triggered.connect(self._check_for_updates_manually)
         help_menu.addSeparator()
         about_action = help_menu.addAction("À propos d'Epubeur")
         about_action.triggered.connect(self._show_about_dialog)
@@ -118,6 +125,40 @@ class MainWindow(QMainWindow):
 
     def _show_about_dialog(self) -> None:
         AboutDialog(self).exec()
+
+    def _check_for_updates_manually(self) -> None:
+        """Déclenchée depuis le menu Aide — contrairement à la vérification automatique au
+        démarrage (silencieuse tant qu'il n'y a rien de neuf), l'utilisateur a demandé cette
+        vérification explicitement et doit recevoir un retour dans tous les cas : mise à jour
+        trouvée, déjà à jour, ou échec (pas de connexion, GitHub injoignable...).
+
+        Le menu est désactivé pendant la requête pour empêcher qu'un second clic n'écrase
+        self._manual_update_checker avant la fin de la première requête réseau : l'ancien
+        QNetworkReply se retrouverait sans référence Python alors que Qt lit encore son socket
+        SSL en interne, ce qui produit le warning console "QSslSocket: device not open"."""
+        self.update_action.setEnabled(False)
+        self._manual_update_checker = UpdateChecker(__version__, self)
+        self._manual_update_checker.update_available.connect(
+            lambda remote_version, release_url: UpdateAvailableDialog(remote_version, release_url, self).exec()
+        )
+        self._manual_update_checker.up_to_date.connect(
+            lambda: QMessageBox.information(self, "Mise à jour", f"Epubeur {__version__} est déjà à jour.")
+        )
+        self._manual_update_checker.check_failed.connect(
+            lambda: QMessageBox.warning(
+                self, "Mise à jour", "Impossible de vérifier les mises à jour. Vérifiez votre connexion internet."
+            )
+        )
+        for signal in (
+            self._manual_update_checker.update_available,
+            self._manual_update_checker.up_to_date,
+            self._manual_update_checker.check_failed,
+        ):
+            signal.connect(lambda *_: self.update_action.setEnabled(True))
+        self._manual_update_checker.check()
+
+    def _show_changelog_dialog(self) -> None:
+        ChangelogDialog(self).exec()
 
     def _update_undo_actions(self, can_undo: bool, can_redo: bool) -> None:
         self.undo_action.setEnabled(can_undo)

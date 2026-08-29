@@ -316,6 +316,42 @@ def test_apply_metadata_populates_contributor_rows(qapp):
     assert roles["Marie Illustratrice"] == "ill"
 
 
+def test_apply_metadata_preserves_unrecognized_contributor_role_code(qapp):
+    """Régression : un role_code absent de CONTRIBUTOR_ROLE_LABELS (import EPUB externe,
+    édition manuelle du JSON .epbz) était silencieusement remplacé par la valeur par défaut du
+    combo ("non précisé") dès la réouverture du formulaire, sans que l'utilisateur ait rien
+    changé — perte d'information au premier collect_metadata() (au clic sur Générer, ou à la
+    sauvegarde du projet), même sans toucher au formulaire."""
+    controller = ProjectController()
+    panel = GeneratePanel(controller)
+    metadata = BookMetadata(title="Livre", contributors=[
+        Contributor(name="Quelqu'un", role_code="code-inconnu-xyz"),
+    ])
+
+    panel.apply_metadata(metadata)
+
+    collected = panel.collect_metadata().contributors
+    assert collected[0].role_code == "code-inconnu-xyz"
+
+
+def test_manually_changing_role_combo_overrides_unrecognized_code(qapp):
+    """Une fois qu'un code non reconnu a été conservé, un choix EXPLICITE de l'utilisateur dans
+    le combo doit prendre le dessus — sans ça, le code d'origine reviendrait malgré le
+    changement manuel ultérieur."""
+    controller = ProjectController()
+    panel = GeneratePanel(controller)
+    metadata = BookMetadata(title="Livre", contributors=[
+        Contributor(name="Quelqu'un", role_code="code-inconnu-xyz"),
+    ])
+    panel.apply_metadata(metadata)
+    row = panel._contributor_rows[0]
+
+    row.role_combo.setCurrentIndex(1)  # choix manuel explicite d'un rôle connu
+
+    collected = panel.collect_metadata().contributors
+    assert collected[0].role_code == row.role_combo.itemData(1)
+
+
 def test_typing_contributor_name_auto_derives_file_as(qapp):
     from PySide6.QtTest import QTest
 

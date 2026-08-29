@@ -1,4 +1,5 @@
-from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLabel, QListWidget, QVBoxLayout
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLabel, QListWidget, QListWidgetItem, QVBoxLayout
 
 from model.document import Chapter, Table
 
@@ -15,13 +16,20 @@ class ChapterSplitDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("Sélectionnez le paragraphe qui commencera le second chapitre :"))
 
+        # Le paragraphe 0 est exclu : le proposer scinderait le chapitre en un premier chapitre
+        # totalement vide (juste son titre) et un second qui récupère tout le texte mais sans
+        # titre — un chapitre fantôme silencieux plutôt qu'une vraie scission.
         self.list_widget = QListWidget()
         for i, para in enumerate(chapter.paragraphs):
+            if i == 0:
+                continue
             if isinstance(para, Table):
                 preview = "[Tableau]"
             else:
                 preview = para.plain_text()[:60] or "(paragraphe vide)"
-            self.list_widget.addItem(f"{i}. {preview}")
+            item = QListWidgetItem(f"{i}. {preview}")
+            item.setData(Qt.ItemDataRole.UserRole, i)
+            self.list_widget.addItem(item)
         layout.addWidget(self.list_widget)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -30,8 +38,8 @@ class ChapterSplitDialog(QDialog):
         layout.addWidget(buttons)
 
     def _accept(self) -> None:
-        row = self.list_widget.currentRow()
-        if row < 0:
+        item = self.list_widget.currentItem()
+        if item is None:
             return
-        self.selected_index = row
+        self.selected_index = item.data(Qt.ItemDataRole.UserRole)
         self.accept()

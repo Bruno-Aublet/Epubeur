@@ -102,6 +102,13 @@ class _ContributorRow(QObject):
         self.role_combo = NoScrollComboBox()
         for code, label in CONTRIBUTOR_ROLE_LABELS.items():
             self.role_combo.addItem(label, code)
+        # Code de rôle non reconnu par CONTRIBUTOR_ROLE_LABELS (import EPUB externe, édition
+        # manuelle du JSON .epbz) : le combo ne peut pas l'afficher (aucune entrée ne correspond),
+        # mais il ne doit pas pour autant être remplacé silencieusement par "non précisé" dès la
+        # réouverture du formulaire — conservé ici tant que l'utilisateur n'a pas lui-même changé
+        # la sélection, cf. set_role_code/to_contributor ci-dessous.
+        self._unrecognized_role_code: str | None = None
+        self.role_combo.currentIndexChanged.connect(self._on_role_combo_changed)
 
         self.remove_btn = QPushButton("Retirer")
         self.remove_btn.clicked.connect(lambda: self.removed.emit(self))
@@ -141,10 +148,28 @@ class _ContributorRow(QObject):
         self.file_as_edit.setText(file_as or _derive_file_as(self.name_edit.text()))
         self._file_as_manually_set = bool(file_as)
 
+    def set_role_code(self, role_code: str) -> None:
+        """Fixe le rôle programmatiquement (import EPUB/rechargement de projet) — si role_code
+        n'est reconnu par aucune entrée du combo, il est conservé tel quel dans
+        _unrecognized_role_code plutôt que silencieusement perdu au profit de la valeur par
+        défaut affichée (index 0, "non précisé")."""
+        index = self.role_combo.findData(role_code)
+        if index != -1:
+            self._unrecognized_role_code = None
+            self.role_combo.setCurrentIndex(index)
+        else:
+            self._unrecognized_role_code = role_code or None
+
+    def _on_role_combo_changed(self) -> None:
+        # Un choix explicite de l'utilisateur dans le combo prime toujours sur un code non
+        # reconnu conservé précédemment — sans ça, le code d'origine reviendrait malgré un
+        # changement manuel ultérieur.
+        self._unrecognized_role_code = None
+
     def to_contributor(self) -> Contributor:
         return Contributor(
             name=self.name_edit.text(),
-            role_code=self.role_combo.currentData(),
+            role_code=self._unrecognized_role_code or self.role_combo.currentData(),
             file_as=self.file_as_edit.text(),
         )
 
@@ -501,9 +526,7 @@ class GeneratePanel(QWidget):
             row = self._contributor_rows[-1]
             row.name_edit.setText(contributor.name)
             row.set_file_as(contributor.file_as)
-            role_index = row.role_combo.findData(contributor.role_code)
-            if role_index != -1:
-                row.role_combo.setCurrentIndex(role_index)
+            row.set_role_code(contributor.role_code)
         if not metadata.contributors:
             self._add_contributor_row()  # toujours au moins une paire de lignes visible
 

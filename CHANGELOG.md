@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.0.2 - 2026-08-29 - Vérification des mises à jour et corrections diverses
+
+- Correction : renommer une image dans l'onglet Images ne renommait que son libellé affiché, jamais le fichier physique correspondant dans le projet .epbz (les projets déjà concernés sont corrigés automatiquement à la prochaine ouverture).
+- Ajout d'une vérification automatique des mises à jour au démarrage (et manuelle depuis le menu Aide), avec un lien direct vers la dernière version sur GitHub.
+- Ajout d'une entrée "Historique des versions" dans le menu Aide, affichant le contenu de ce changelog.
+- Ajout d'un avertissement si des chapitres semblent avoir changé d'ordre lors du remplacement d'un fichier Writer déjà importé (les titres pouvaient auparavant être réattribués au mauvais chapitre sans prévenir).
+- Correction : l'icône Epubeur des fichiers .epbz ne s'affichait toujours pas dans l'explorateur Windows après compilation (le chemin enregistré dans le registre pointait à côté de l'exécutable au lieu du dossier interne où PyInstaller place réellement l'icône).
+- Correction : les polices figées disparaissaient toujours après réimport d'un EPUB dès qu'un ISBN était renseigné dans les métadonnées.
+- Correction : les dossiers temporaires créés à l'ouverture d'un projet ou à la génération d'un aperçu EPUB n'étaient jamais nettoyés, accumulant des fichiers orphelins au fil d'une session.
+- Correction : scinder un chapitre à partir de son tout premier paragraphe créait un chapitre vide sans avertissement (le paragraphe 0 n'est plus proposé comme point de scission).
+- Correction : un cas limite imprévu dans l'analyse d'un fichier Writer pouvait faire planter l'application au lieu d'afficher un message d'erreur, même quand l'ouverture initiale du fichier avait réussi.
+- Correction : un ISBN copié depuis un site utilisant un tiret typographique (au lieu du tiret standard) était rejeté à tort comme invalide, bloquant la génération de l'EPUB.
+- Correction : une police dont le nom de fichier contient "ExtraBold" ou "UltraBold" pouvait être détectée avec un poids trop faible (Bold au lieu d'ExtraBold) quand ses métadonnées internes n'étaient pas lisibles.
+- Correction : un paragraphe contenant deux images côte à côte (ancrées au caractère) ne conservait que la première ; la seconde disparaissait silencieusement à l'import.
+- Correction : une sous-liste imbriquée dans une note de bas de page pouvait afficher le mauvais style (puces au lieu de numéros, ou l'inverse).
+- Correction : une liste placée directement dans une cellule de tableau (sans texte avant) perdait tout son contenu à l'import.
+- Correction : un flash furtif de fenêtre Windows pouvait apparaître en actualisant l'onglet Images en présence d'images orphelines.
+- Correction : deux polices figées au contenu identique produisaient un doublon inutile dans le fichier de projet .epbz.
+- Correction : rouvrir un même fichier via un chemin de casse différente créait une entrée en double dans les listes "Projets récents"/"Fichiers récents".
+- Correction : le rôle d'un contributeur venant d'un EPUB externe ou d'une édition manuelle du projet pouvait être silencieusement réinitialisé à "non précisé" en rouvrant le formulaire Métadonnées.
+- Correction : l'import d'un EPUB externe (non généré par Epubeur) pouvait fusionner à tort deux chapitres distincts si leur texte contenait un exemple technique ressemblant à un marqueur interne de l'application.
+- Correction : coller une image dont le fichier a été déplacé ou supprimé entre le copier et le coller pouvait planter l'application au lieu d'afficher un message d'erreur.
+- Correction : cliquer plusieurs fois rapidement sur "Vérifier les mises à jour" avant la fin de la première vérification pouvait produire un avertissement "QSslSocket: device not open" dans la console (le menu est désormais désactivé pendant la vérification).
+- Renforcement : la fusion d'un chapitre avec lui-même est désormais explicitement rejetée plutôt que de risquer une perte de contenu.
+- Nettoyage : suppression d'une fonction interne jamais utilisée (détection de numéro de chapitre dans le titre), sans effet sur le comportement de l'application.
+
 ## v1.0.1 - 2026-08-29 - Améliorations et corrections
 
 - Ajout d'un lien vers le dépôt GitHub dans le menu Aide.

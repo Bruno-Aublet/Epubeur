@@ -66,6 +66,21 @@ def test_guess_variant_from_filename_fallback():
     assert italic is False
 
 
+def test_guess_variant_from_filename_extrabold_and_ultrabold():
+    """Régression : "bold" est une sous-chaîne de "extrabold"/"ultrabold", et la boucle de
+    _FILENAME_HINTS s'arrête au premier match — les tester dans le mauvais ordre classait
+    "SuperFont-ExtraBold.ttf" en poids 700 (Bold) au lieu de 800 (ExtraBold)."""
+    weight, italic, _ = _guess_variant_from_filename(Path("SuperFont-ExtraBold.ttf"))
+    assert weight == 800
+    assert italic is False
+
+    weight, italic, _ = _guess_variant_from_filename(Path("SuperFont-UltraBold.ttf"))
+    assert weight == 800
+
+    weight, italic, _ = _guess_variant_from_filename(Path("SuperFont-Bold.ttf"))
+    assert weight == 700
+
+
 @pytest.mark.skipif(not ARIAL.exists(), reason="Police système de test introuvable")
 def test_lock_font_files_ignores_duplicate_variant_and_warns(qapp, tmp_path):
     """Deux fichiers différents sur disque mais détectés avec le même (weight, italic) —

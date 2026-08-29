@@ -490,11 +490,12 @@ class ImageGallery(QWidget):
         for chapter in document.chapters.values():
             seen_in_chapter: set[str] = set()
             for para in iter_all_paragraphs(chapter.paragraphs):
-                if para.image is None or para.image.asset_id in seen_in_chapter:
-                    continue
-                seen_in_chapter.add(para.image.asset_id)
-                usage.setdefault(para.image.asset_id, []).append(
-                    (chapter.id, chapter.title or "(chapitre sans titre)"))
+                for image in para.all_images():
+                    if image.asset_id in seen_in_chapter:
+                        continue
+                    seen_in_chapter.add(image.asset_id)
+                    usage.setdefault(image.asset_id, []).append(
+                        (chapter.id, chapter.title or "(chapitre sans titre)"))
 
         chapter_pov_assets = [a for a in self.controller.asset_store.all_assets() if a.role == AssetRole.CHAPTER_POV]
         # is_asset_referenced() couvre aussi la couverture/4e de couverture — un asset CHAPTER_POV
@@ -519,9 +520,12 @@ class ImageGallery(QWidget):
             self.content_layout.insertWidget(self.content_layout.count() - 1, block)
 
         if orphan_assets:
+            # parent=self dès la construction : recréé à chaque refresh() (assets_changed/
+            # chapters_changed), un QLabel construit sans parent flashe brièvement comme fenêtre
+            # top-level Windows tant qu'il n'est pas reparenté par insertWidget ci-dessous.
             self.orphans_label = QLabel(
                 "Images orphelines (retirées du livre, non utilisées — n'apparaîtront jamais "
-                "dans l'EPUB généré tant qu'elles ne sont pas réutilisées) :")
+                "dans l'EPUB généré tant qu'elles ne sont pas réutilisées) :", self)
             self.orphans_label.setStyleSheet("color: #888; margin-top: 1em;")
             self.orphans_label.setWordWrap(True)
             self.content_layout.insertWidget(self.content_layout.count() - 1, self.orphans_label)

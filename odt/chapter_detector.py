@@ -101,7 +101,7 @@ def _iter_runs(elem, resolver: StyleResolver, inherited: CharFormat, source: Odt
             # comme texte du run d'appel — jamais recalculé : ODF le fournit déjà résolu.
             runs.append(Run(text=citation_text, fmt=fmt, note_id=note_id))
         elif child.tag == FRAME_TAG:
-            # Images gérées séparément par le détecteur (_find_image, appelée depuis
+            # Images gérées séparément par le détecteur (_find_images, appelée depuis
             # _paragraph_from_element) — mais une zone de texte (draw:text-box) ancrée au
             # caractère/paragraphe n'a pas d'équivalent "bloc à part" possible ici : _iter_runs
             # produit un flux plat de Run, pas des Paragraph de niveau supérieur. Son texte est
@@ -120,12 +120,18 @@ def _iter_runs(elem, resolver: StyleResolver, inherited: CharFormat, source: Odt
     return runs
 
 
-def _find_image(elem):
-    """Retourne (href, alt_text, frame_style_name) — alt_text vient de <svg:desc>, la description
-    ODF standard saisie dans Writer via clic droit sur l'image > Description (distincte de
-    <svg:title>, le titre court, non utilisée ici). Chaîne vide si non renseignée par l'auteur.
-    frame_style_name (draw:style-name du <draw:frame>) sert à résoudre l'habillage de texte
-    (style:wrap), cf. _resolve_image_wrap ci-dessous."""
+def _find_images(elem):
+    """Retourne la liste de TOUTES les (href, alt_text, frame_style_name) trouvées dans elem —
+    un même <text:p> peut contenir plusieurs <draw:frame> porteurs d'image (ex : deux images
+    côte à côte dans la même ligne, ancrées au caractère) ; sans ceci, seule la première était
+    conservée et les suivantes disparaissaient silencieusement du paragraphe (rattrapées
+    seulement partiellement par le filet de sécurité unresolved_image_hrefs en fin de
+    split_into_chapters). alt_text vient de <svg:desc>, la description ODF standard saisie dans
+    Writer via clic droit sur l'image > Description (distincte de <svg:title>, le titre court,
+    non utilisée ici). Chaîne vide si non renseignée par l'auteur. frame_style_name
+    (draw:style-name du <draw:frame>) sert à résoudre l'habillage de texte (style:wrap), cf.
+    _resolve_image_wrap ci-dessous."""
+    results = []
     for frame in elem.iter(FRAME_TAG):
         image = frame.find(IMAGE_TAG)
         if image is not None:
@@ -133,8 +139,8 @@ def _find_image(elem):
             desc_elem = frame.find(qn("svg:desc"))
             alt_text = desc_elem.text or "" if desc_elem is not None else ""
             frame_style_name = frame.get(qn("draw:style-name"))
-            return href, alt_text, frame_style_name
-    return None, "", None
+            results.append((href, alt_text, frame_style_name))
+    return results
 
 
 def _text_box_paragraphs(frame_elem, resolver: StyleResolver, source: OdtSource, asset_store,
@@ -143,10 +149,10 @@ def _text_box_paragraphs(frame_elem, resolver: StyleResolver, source: OdtSource,
     """Extrait le texte d'une zone de texte Writer (Insertion > Zone de texte), structurellement
     un <draw:frame><draw:text-box><text:p>...</text:p></draw:text-box></draw:frame> — donc un
     <draw:frame> SANS <draw:image> interne (contrairement à une image). Sans cette fonction, un
-    tel frame ne matchait ni _find_image (pas de draw:image, retourne href=None) ni aucune autre
-    branche : son contenu disparaissait silencieusement, même mécanisme que le bug déjà corrigé
-    pour les text:section. Retourne None si `frame_elem` n'est pas un draw:frame contenant une
-    draw:text-box (cas normal : une image), pour laisser l'appelant essayer _find_image à la place."""
+    tel frame ne matchait ni _find_images (pas de draw:image, retourne une liste vide) ni aucune
+    autre branche : son contenu disparaissait silencieusement, même mécanisme que le bug déjà
+    corrigé pour les text:section. Retourne None si `frame_elem` n'est pas un draw:frame contenant
+    une draw:text-box (cas normal : une image), pour laisser l'appelant essayer _find_images à la place."""
     text_box = frame_elem.find(TEXT_BOX_TAG)
     if text_box is None:
         return None
@@ -181,14 +187,17 @@ def _paragraph_from_element(elem, resolver: StyleResolver, list_level: int, list
     paragraph_fmt = resolver.resolve_text_style(style_name, inherited=CharFormat())
     runs = _iter_runs(elem, resolver, paragraph_fmt, source, asset_store, document_footnotes, image_wraps)
 
-    image_anchor = None
-    href, alt_text, frame_style_name = _find_image(elem)
-    if href is not None and asset_store is not None:
-        data = dict(source.iter_pictures()).get(href)
-        if data is not None:
-            ext = href.rsplit(".", 1)[-1] if "." in href else "png"
+    image_anchors: list[ImageAnchor] = []
+    if asset_store is not None:
+        pictures = dict(source.iter_pictures())
+        for href, alt_text, frame_style_name in _find_images(elem):
+            if href is None:
+                continue
+            data = pictures.get(href)
+            if data is None:
+                continue
             asset = asset_store.ingest_bytes(data, original_filename=href, role=AssetRole.CHAPTER_POV)
-            image_anchor = ImageAnchor(asset_id=asset.id, alt_text=alt_text)
+            image_anchors.append(ImageAnchor(asset_id=asset.id, alt_text=alt_text))
             if asset.id not in image_wraps:
                 image_wraps[asset.id] = _resolve_image_wrap(resolver, frame_style_name)
 
@@ -198,7 +207,8 @@ def _paragraph_from_element(elem, resolver: StyleResolver, list_level: int, list
         runs=runs,
         list_level=list_level,
         list_group_id=list_group_id if list_level > 0 else None,
-        image=image_anchor,
+        image=image_anchors[0] if image_anchors else None,
+        extra_images=image_anchors[1:],
         page_break_before=resolved.page_break_before,
     )
 
@@ -224,16 +234,14 @@ def _cells_from_row_element(row_elem, resolver: StyleResolver, source: OdtSource
         cell_repeat = int(cell_elem.get(COLUMNS_REPEATED_ATTR, "1"))
         colspan = int(cell_elem.get(COLUMNS_SPANNED_ATTR, "1")) or 1
         rowspan = int(cell_elem.get(ROWS_SPANNED_ATTR, "1")) or 1
+        # cell_elem est lui-même le conteneur générique attendu par _walk_body (ses enfants directs
+        # peuvent être <text:p>, <text:list> ou <text:section>, exactement comme <text:note-body>)
+        # — lui passer cell_elem directement, jamais un LIST_TAG trouvé dedans : _walk_body itère
+        # sur les ENFANTS de l'argument reçu, donc lui passer la liste elle-même l'aurait fait
+        # itérer sur les <text:list-item> (aucun ne matche PARAGRAPH_TAG/LIST_TAG/SECTION_TAG),
+        # perdant silencieusement tout le contenu d'une liste directement dans une cellule.
         paragraphs: list[Paragraph] = []
-        for child in cell_elem:
-            if child.tag in (PARAGRAPH_TAG, HEADING_TAG):
-                paragraphs.append(_paragraph_from_element(child, resolver, 0, False, source, asset_store,
-                                                            document_footnotes, image_wraps))
-            elif child.tag in (LIST_TAG, SECTION_TAG):
-                # Une cellule peut exceptionnellement contenir une liste ODF ou une section (rare
-                # mais valide) : réutilise _walk_body, déjà capable de parcourir un conteneur
-                # générique et d'accumuler dans paragraphs.
-                _walk_body(child, resolver, source, asset_store, paragraphs, document_footnotes, image_wraps)
+        _walk_body(cell_elem, resolver, source, asset_store, paragraphs, document_footnotes, image_wraps)
         for _ in range(cell_repeat):
             cells.append(TableCell(paragraphs=[copy.deepcopy(p) for p in paragraphs],
                                     colspan=colspan, rowspan=rowspan, is_header=is_header))
@@ -279,10 +287,15 @@ def _walk_body(body_elem, resolver: StyleResolver, source: OdtSource, asset_stor
                                                 document_footnotes, image_wraps))
         elif child.tag == LIST_TAG:
             style_name = child.get(LIST_STYLE_NAME_ATTR)
-            ordered = resolver.is_list_style_ordered(style_name)
+            new_level = list_level + 1
+            # level=new_level, pas le défaut (1) : sans ça, une sous-liste imbriquée (niveau >= 2)
+            # dans une note/cellule/zone de texte résolvait toujours le type ODF du niveau 1 du
+            # style, même quand celui-ci définit un type différent par niveau — même correctif
+            # déjà appliqué dans collect() (flux principal du document) mais oublié ici.
+            ordered = resolver.is_list_style_ordered(style_name, level=new_level)
             for item in child.findall(LIST_ITEM_TAG):
                 _walk_body(item, resolver, source, asset_store, out, document_footnotes, image_wraps,
-                           list_level + 1, ordered)
+                           new_level, ordered)
         elif child.tag == SECTION_TAG:
             # Conteneur transparent (cf. collect() dans split_into_chapters, même raison) : une
             # section peut aussi apparaître dans une cellule de tableau ou un corps de note.
@@ -376,7 +389,8 @@ def split_into_chapters(source: OdtSource, resolver: StyleResolver, source_odt_i
                         heading_texts.append("")
                         break_after_flags.append(False)
                     continue
-                href, alt_text, frame_style_name = _find_image(child)
+                images_found = _find_images(child)
+                href, alt_text, frame_style_name = images_found[0] if images_found else (None, "", None)
                 if href is not None and asset_store is not None:
                     data = dict(source.iter_pictures()).get(href)
                     if data is not None:
@@ -450,8 +464,8 @@ def split_into_chapters(source: OdtSource, resolver: StyleResolver, source_odt_i
         resolved_paragraphs += [para for paras in document_footnotes.values()
                                  for para in iter_all_paragraphs(paras)]
         for para in resolved_paragraphs:
-            if para.image is not None:
-                resolved_asset_ids.add(para.image.asset_id)
+            for image in para.all_images():
+                resolved_asset_ids.add(image.asset_id)
 
         for href in total_image_hrefs:
             data = pictures_by_href.get(href)

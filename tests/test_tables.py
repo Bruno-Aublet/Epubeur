@@ -390,7 +390,9 @@ def test_chapter_split_dialog_shows_table_placeholder(qapp):
     chapter = next(iter(document.chapters.values()))
     dialog = ChapterSplitDialog(chapter)
 
-    assert dialog.list_widget.item(1).text() == "1. [Tableau]"
+    # Le paragraphe 0 ("avant") est exclu de la liste (cf. ChapterSplitDialog), donc la Table
+    # (index réel 1) se retrouve en première position affichée.
+    assert dialog.list_widget.item(0).text() == "1. [Tableau]"
 
 
 def test_epub_builder_embeds_images_inside_table_cells(tmp_path):

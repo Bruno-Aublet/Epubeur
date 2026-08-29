@@ -589,6 +589,8 @@ def test_gallery_hides_orphans_section_when_no_orphan(qapp):
         assert not (hasattr(widget, "text") and callable(widget.text) and "orphelines" in widget.text())
 
 
+
+
 def test_gallery_orphan_block_has_no_size_or_wrap_combos(qapp):
     controller, asset = _make_controller_with_image(qapp)
     controller.assets_changed.emit()

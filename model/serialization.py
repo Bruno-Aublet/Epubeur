@@ -54,6 +54,9 @@ def _paragraph_to_dict(p: Paragraph) -> dict:
         "runs": [{"text": r.text, "fmt": _char_format_to_dict(r.fmt), "link_url": r.link_url,
                   "note_id": r.note_id} for r in p.runs],
         "image": {"asset_id": p.image.asset_id, "alt_text": p.image.alt_text} if p.image else None,
+        # Deuxième image (et suivantes) ancrée(s) au même paragraphe, cf. Paragraph.extra_images —
+        # absent des projets sauvegardés avant ce champ, d.get() ci-dessous replie sur [] pour eux.
+        "extra_images": [{"asset_id": img.asset_id, "alt_text": img.alt_text} for img in p.extra_images],
         "page_break_before": p.page_break_before,
     }
 
@@ -68,6 +71,7 @@ def _paragraph_from_dict(d: dict) -> Paragraph:
                   note_id=r.get("note_id"))
               for r in d["runs"]],
         image=ImageAnchor(**d["image"]) if d.get("image") else None,
+        extra_images=[ImageAnchor(**img) for img in d.get("extra_images", [])],
         page_break_before=d.get("page_break_before", False),
     )
 
@@ -339,6 +343,12 @@ def _build_project_dict(project: ProjectMeta) -> tuple[dict, list[tuple[str, Pat
     import hashlib
 
     font_copy_list: list[tuple[str, Path]] = []
+    # Dédoublonne par arcname (sha256 + extension) : deux LockedFontFile distincts peuvent
+    # pointer vers des fichiers au contenu identique (ex. l'utilisateur pointe volontairement
+    # Bold vers une copie du même fichier que Regular) — sans ceci, save_project_epbz écrivait
+    # deux fois la même entrée dans le zip (UserWarning: Duplicate name), gaspillant de l'espace
+    # sans perte fonctionnelle (les deux LockedFontFile retrouvent un chemin valide au rechargement).
+    seen_arcnames: set[str] = set()
     document_dict = document_to_dict(project.document)
     for lf in document_dict["locked_fonts"]:
         for f in lf["files"]:
@@ -350,7 +360,9 @@ def _build_project_dict(project: ProjectMeta) -> tuple[dict, list[tuple[str, Pat
                 continue
             sha256 = hashlib.sha256(source_path.read_bytes()).hexdigest()
             f["file_path"] = f"fonts/{sha256}{source_path.suffix}"
-            font_copy_list.append((sha256, source_path))
+            if f["file_path"] not in seen_arcnames:
+                seen_arcnames.add(f["file_path"])
+                font_copy_list.append((sha256, source_path))
 
     data = {
         "format_version": FORMAT_VERSION,

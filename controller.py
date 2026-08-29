@@ -1,4 +1,5 @@
 import copy
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from model.error_messages import (
     describe_project_load_error,
     describe_project_save_error,
 )
+from model.chapter_reorder_detection import detect_reordered_chapters
 from model.document import (
     Chapter,
     ImageAnchor,
@@ -63,7 +65,8 @@ class ProjectController(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.project = ProjectMeta()
-        self._temp_assets_dir = Path(tempfile.mkdtemp(prefix="epubeur_assets_"))
+        self._temp_assets_dir: Path | None = None
+        self._set_temp_assets_dir(Path(tempfile.mkdtemp(prefix="epubeur_assets_")))
         self.asset_store = AssetStore(self._temp_assets_dir)
         self._font_counts: dict[str, int] = {}
         self._undo_stack: list = []
@@ -92,10 +95,25 @@ class ProjectController(QObject):
         savoir s'il faut avertir avant de fermer/écraser le projet en cours."""
         return bool(self.project.document.chapters) or bool(self._undo_stack)
 
+    def _set_temp_assets_dir(self, new_dir: Path) -> None:
+        """Remplace _temp_assets_dir par new_dir, en supprimant d'abord l'ancien dossier
+        temporaire (tempfile.mkdtemp ou extraction d'un .epbz) — sans ça, chaque nouveau/ouvert/
+        fermé de projet dans la même session laissait l'ancien dossier orphelin dans %TEMP%."""
+        old_dir = self._temp_assets_dir
+        self._temp_assets_dir = new_dir
+        if old_dir is not None and old_dir != new_dir:
+            shutil.rmtree(old_dir, ignore_errors=True)
+
+    def cleanup_temp_dir(self) -> None:
+        """À appeler une seule fois, à la fermeture de l'application (cf. main.py) : supprime le
+        dernier dossier temporaire encore en usage, qu'aucun remplacement ultérieur ne nettoiera."""
+        if self._temp_assets_dir is not None:
+            shutil.rmtree(self._temp_assets_dir, ignore_errors=True)
+
     def close_project(self) -> None:
         """Réinitialise entièrement l'état à un projet vide, comme au démarrage de l'app."""
         self.project = ProjectMeta()
-        self._temp_assets_dir = Path(tempfile.mkdtemp(prefix="epubeur_assets_"))
+        self._set_temp_assets_dir(Path(tempfile.mkdtemp(prefix="epubeur_assets_")))
         self.asset_store = AssetStore(self._temp_assets_dir)
         self._font_counts = {}
         self._undo_stack = []
@@ -169,19 +187,20 @@ class ProjectController(QObject):
         warned_asset_ids: set[str] = set()
         for chapter in self.project.document.chapters.values():
             for para in iter_all_paragraphs(chapter.paragraphs):
-                if para.image is None or not para.image.alt_text.strip():
-                    continue
-                asset_id = para.image.asset_id
-                existing = self.project.document.image_alt_texts.get(asset_id)
-                if existing is None:
-                    self.project.document.image_alt_texts[asset_id] = para.image.alt_text
-                elif existing != para.image.alt_text and asset_id not in warned_asset_ids:
-                    warned_asset_ids.add(asset_id)
-                    self.warning_occurred.emit(
-                        f"Une même image est décrite différemment selon les fichiers sources "
-                        f"(« {existing} » vs « {para.image.alt_text} »). La première description "
-                        "trouvée a été conservée — vérifiez/harmonisez dans l'onglet Images si besoin."
-                    )
+                for image in para.all_images():
+                    if not image.alt_text.strip():
+                        continue
+                    asset_id = image.asset_id
+                    existing = self.project.document.image_alt_texts.get(asset_id)
+                    if existing is None:
+                        self.project.document.image_alt_texts[asset_id] = image.alt_text
+                    elif existing != image.alt_text and asset_id not in warned_asset_ids:
+                        warned_asset_ids.add(asset_id)
+                        self.warning_occurred.emit(
+                            f"Une même image est décrite différemment selon les fichiers sources "
+                            f"(« {existing} » vs « {image.alt_text} »). La première description "
+                            "trouvée a été conservée — vérifiez/harmonisez dans l'onglet Images si besoin."
+                        )
 
     def emit_unsupported_image_warnings(self) -> None:
         """Prévient l'utilisateur pour chaque image ingérée dans un format autre que PNG/JPEG
@@ -207,6 +226,20 @@ class ProjectController(QObject):
         self.warning_occurred.emit(
             f"Image « {file_path.name} » dans un format non supporté (seuls PNG et JPEG sont "
             "acceptés) : elle n'a pas été ajoutée au projet."
+        )
+        return False
+
+    def warn_and_reject_if_missing(self, file_path: Path) -> bool:
+        """Émet un avertissement et retourne False si file_path n'existe plus sur le disque —
+        cas possible entre le moment où "Coller l'image ici" a mémorisé le chemin (presse-papier
+        Windows, cf. paste_image_source) et le clic effectif : le fichier a pu être déplacé ou
+        supprimé entretemps. Sans cette vérification, file_path.read_bytes() lève une
+        FileNotFoundError non gérée qui remonte jusqu'à Qt."""
+        if file_path.exists():
+            return True
+        self.warning_occurred.emit(
+            f"Image « {file_path.name} » introuvable (le fichier a peut-être été déplacé ou "
+            "supprimé depuis) : elle n'a pas été ajoutée au projet."
         )
         return False
 
@@ -240,23 +273,22 @@ class ProjectController(QObject):
 
     def import_odt(self, path: Path) -> SourceOdtFile | None:
         path = Path(path)
-        try:
-            source = OdtSource(path)
-            resolver = StyleResolver(source)
-        except Exception as exc:
-            self.error_occurred.emit(describe_odt_open_error(exc, path.name))
-            return None
-
         entry = SourceOdtFile.create(path, self.project.next_import_order())
         new_footnotes: dict[str, list[Paragraph]] = {}
         new_orphan_image_asset_ids: list[str] = []
         new_image_wraps: dict = {}
         new_unresolved_image_hrefs: list[str] = []
-        chapters = split_into_chapters(source, resolver, source_odt_id=entry.id, asset_store=self.asset_store,
-                                        document_footnotes=new_footnotes,
-                                        orphan_image_asset_ids=new_orphan_image_asset_ids,
-                                        image_wraps=new_image_wraps,
-                                        unresolved_image_hrefs=new_unresolved_image_hrefs)
+        try:
+            source = OdtSource(path)
+            resolver = StyleResolver(source)
+            chapters = split_into_chapters(source, resolver, source_odt_id=entry.id, asset_store=self.asset_store,
+                                            document_footnotes=new_footnotes,
+                                            orphan_image_asset_ids=new_orphan_image_asset_ids,
+                                            image_wraps=new_image_wraps,
+                                            unresolved_image_hrefs=new_unresolved_image_hrefs)
+        except Exception as exc:
+            self.error_occurred.emit(describe_odt_open_error(exc, path.name))
+            return None
         self.project.document.footnotes.update(new_footnotes)
         for asset_id, wrap in new_image_wraps.items():
             if asset_id not in self.project.document.image_wraps:
@@ -336,28 +368,37 @@ class ProjectController(QObject):
         if entry is None:
             return self.import_odt(path)  # filet de sécurité, ne devrait pas arriver vu le câblage UI
 
+        new_footnotes: dict[str, list[Paragraph]] = {}
+        new_orphan_image_asset_ids: list[str] = []
+        new_image_wraps: dict = {}
+        new_unresolved_image_hrefs: list[str] = []
         try:
             source = OdtSource(path)
             resolver = StyleResolver(source)
+            new_chapters = split_into_chapters(source, resolver, source_odt_id=entry.id,
+                                                asset_store=self.asset_store,
+                                                document_footnotes=new_footnotes,
+                                                orphan_image_asset_ids=new_orphan_image_asset_ids,
+                                                image_wraps=new_image_wraps,
+                                                unresolved_image_hrefs=new_unresolved_image_hrefs)
         except Exception as exc:
             self.error_occurred.emit(describe_odt_open_error(exc, path.name))
             return None
 
         self._snapshot_structure()
 
-        new_footnotes: dict[str, list[Paragraph]] = {}
-        new_orphan_image_asset_ids: list[str] = []
-        new_image_wraps: dict = {}
-        new_unresolved_image_hrefs: list[str] = []
-        new_chapters = split_into_chapters(source, resolver, source_odt_id=entry.id,
-                                            asset_store=self.asset_store,
-                                            document_footnotes=new_footnotes,
-                                            orphan_image_asset_ids=new_orphan_image_asset_ids,
-                                            image_wraps=new_image_wraps,
-                                            unresolved_image_hrefs=new_unresolved_image_hrefs)
-
         old_ids = list(entry.chapter_ids)
         paired = min(len(old_ids), len(new_chapters))
+
+        # Calculé avant toute mutation (les anciens Chapter sont encore intacts) : si le compte
+        # total ne change pas, l'avertissement plus bas (basé sur len(new_chapters) != len(old_ids))
+        # ne se déclenche jamais alors qu'un simple réordonnancement dans le fichier source (ex.
+        # deux chapitres permutés dans Writer) ferait coller silencieusement le titre de l'ancien
+        # chapitre i sur le nouveau texte à cette même position, qui n'est plus le même chapitre.
+        old_chapters_before_replace = [self.project.document.chapters[old_id] for old_id in old_ids]
+        chapters_appear_reordered = detect_reordered_chapters(
+            old_chapters_before_replace[:paired], new_chapters[:paired]
+        )
 
         # Appariement par position : le nouveau chapitre i hérite du titre/visibilité de l'ancien
         # chapitre i, puis prend sa place exacte dans structure.items (libre ou dans une Part).
@@ -409,6 +450,13 @@ class ProjectController(QObject):
                 f"{len(old_ids)} : les {paired} premiers chapitres ont conservé leur titre et leur "
                 "position, mais vérifiez la fin du fichier — des chapitres ont pu être ajoutés ou "
                 "supprimés et nécessitent une relecture manuelle."
+            )
+        elif chapters_appear_reordered:
+            self.warning_occurred.emit(
+                f"« {path.name} » semble avoir des chapitres dans un ordre différent de la "
+                "version précédente : les titres ont été réattribués par position et peuvent "
+                "ne plus correspondre au bon texte — vérifiez les titres de chapitres après "
+                "ce remplacement."
             )
 
         if new_orphan_image_asset_ids:
@@ -650,6 +698,8 @@ class ProjectController(QObject):
         file_path = Path(file_path)
         if not self.warn_and_reject_if_unsupported(file_path):
             return None
+        if not self.warn_and_reject_if_missing(file_path):
+            return None
         self._snapshot_structure()
         asset = self.asset_store.ingest_bytes(file_path.read_bytes(), file_path.name, AssetRole.CHAPTER_POV)
         chapter = Chapter.create(title=file_path.stem)
@@ -676,6 +726,8 @@ class ProjectController(QObject):
             return
         file_path = Path(file_path)
         if not self.warn_and_reject_if_unsupported(file_path):
+            return
+        if not self.warn_and_reject_if_missing(file_path):
             return
         self._snapshot_structure()
         asset = self.asset_store.ingest_bytes(file_path.read_bytes(), file_path.name, AssetRole.CHAPTER_POV)
@@ -772,17 +824,29 @@ class ProjectController(QObject):
         self.assets_changed.emit()
 
     def _delete_chapter_if_emptied_image_chapter(self, chapter_id: str) -> bool:
-        """Si le chapitre a EXACTEMENT 1 paragraphe restant, un Paragraph (jamais une Table) avec
-        image=None ET runs=[], supprime le chapitre entier et retourne True. Appelé APRÈS avoir
-        posé image=None sur le paragraphe concerné, jamais avant."""
+        """Si le chapitre a EXACTEMENT 1 paragraphe restant, un Paragraph (jamais une Table) sans
+        aucune image (all_images() vide) ET runs=[], supprime le chapitre entier et retourne True.
+        Appelé APRÈS avoir retiré l'image concernée du paragraphe, jamais avant."""
         chapter = self.project.document.chapters.get(chapter_id)
         if chapter is None or len(chapter.paragraphs) != 1:
             return False
         only = chapter.paragraphs[0]
-        if isinstance(only, Paragraph) and only.image is None and only.runs == []:
+        if isinstance(only, Paragraph) and not only.all_images() and only.runs == []:
             self.project.document.delete_chapter(chapter_id)
             return True
         return False
+
+    @staticmethod
+    def _remove_image_from_paragraph(para: Paragraph, asset_id: str) -> bool:
+        """Retire toute occurrence d'asset_id de para (que ce soit .image ou une entrée
+        d'extra_images) en préservant l'ordre des images restantes. Retourne True si quelque
+        chose a été retiré."""
+        remaining = [img for img in para.all_images() if img.asset_id != asset_id]
+        if len(remaining) == len(para.all_images()):
+            return False
+        para.image = remaining[0] if remaining else None
+        para.extra_images = remaining[1:]
+        return True
 
     def remove_image_everywhere(self, asset_id: str) -> None:
         """Retire cette image de TOUTES ses occurrences dans le livre (bouton de l'onglet
@@ -795,8 +859,7 @@ class ProjectController(QObject):
         for chapter in list(self.project.document.chapters.values()):
             changed = False
             for para in iter_all_paragraphs(chapter.paragraphs):
-                if para.image is not None and para.image.asset_id == asset_id:
-                    para.image = None
+                if self._remove_image_from_paragraph(para, asset_id):
                     changed = True
             if not changed:
                 continue
@@ -812,7 +875,10 @@ class ProjectController(QObject):
 
     def remove_image_occurrence(self, chapter_id: str, paragraph_index: int) -> None:
         """Retire SEULEMENT cette occurrence précise de l'image (clic droit dans la preview de
-        Structure) — les autres occurrences éventuelles ailleurs restent intactes."""
+        Structure) — les autres occurrences éventuelles ailleurs restent intactes. Si le
+        paragraphe visé porte plusieurs images (cf. Paragraph.extra_images), retire uniquement
+        la première (celle affichée en premier) — cohérent avec le clic droit qui cible l'image
+        principale du bloc, pas une image précise parmi plusieurs."""
         chapter = self.project.document.chapters.get(chapter_id)
         if chapter is None or not (0 <= paragraph_index < len(chapter.paragraphs)):
             return
@@ -821,7 +887,8 @@ class ProjectController(QObject):
             return
         asset_id = block.image.asset_id
         self._snapshot_structure()
-        block.image = None
+        block.image = block.extra_images[0] if block.extra_images else None
+        block.extra_images = block.extra_images[1:]
         if chapter.pov_image_asset_id == asset_id:
             chapter.pov_image_asset_id = None
         chapter_deleted = self._delete_chapter_if_emptied_image_chapter(chapter_id)
@@ -996,8 +1063,14 @@ class ProjectController(QObject):
             return []
 
         self.project = project
-        self._temp_assets_dir = extract_dir
+        self._set_temp_assets_dir(extract_dir)
         self.asset_store = AssetStore(extract_dir / "assets")
+        if self.asset_store.migrated_on_load:
+            # Rattrapage d'anciens projets dont des images renommées étaient restées nommées par
+            # leur hash sur disque (cf. AssetStore._load_index) : réécrit le .epbz tout de suite
+            # avec les fichiers migrés, sans attendre un Enregistrer explicite de l'utilisateur —
+            # la migration doit être invisible, pas conditionnée à une action de sa part.
+            save_project_epbz(project, self.asset_store, epbz_path)
         self._font_counts = dict(project.document.known_font_counts)
         # Un projet sauvegardé avant l'introduction de image_alt_texts peut contenir des
         # ImageAnchor avec un alt_text (svg:desc) jamais reporté vers la description globale.

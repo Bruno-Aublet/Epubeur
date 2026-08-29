@@ -52,3 +52,47 @@ def test_preview_has_generate_controls(qapp):
     preview = EpubPreview(controller, panel.collect_metadata)
 
     assert preview.generate_controls is not None
+
+
+def test_reloading_epub_removes_previous_extract_dir(qapp, tmp_path):
+    """Régression : load_epub() écrasait self._extract_dir sans jamais supprimer le dossier
+    temporaire précédent — régénérer l'EPUB plusieurs fois (flux normal de relecture)
+    accumulait un dossier orphelin complet par génération dans %TEMP%."""
+    controller = ProjectController()
+    controller.import_odt(Path(__file__).parent / "fixtures" / "sample_simple.odt")
+    panel = GeneratePanel(controller)
+    preview = EpubPreview(controller, panel.collect_metadata)
+
+    from epub.builder import build_epub
+    out = build_epub(controller.project, controller.asset_store, tmp_path / "out.epub",
+                      metadata=BookMetadata(title="Mon Roman"))
+
+    preview.load_epub(str(out))
+    first_extract_dir = preview._extract_dir
+    assert first_extract_dir.exists()
+
+    preview.load_epub(str(out))
+    second_extract_dir = preview._extract_dir
+
+    assert not first_extract_dir.exists()
+    assert second_extract_dir.exists()
+    assert second_extract_dir != first_extract_dir
+
+
+def test_reset_removes_extract_dir(qapp, tmp_path):
+    """Régression : reset() mettait juste la référence à None sans supprimer le dossier
+    temporaire extrait, le laissant orphelin dans %TEMP%."""
+    controller = ProjectController()
+    controller.import_odt(Path(__file__).parent / "fixtures" / "sample_simple.odt")
+    panel = GeneratePanel(controller)
+    preview = EpubPreview(controller, panel.collect_metadata)
+
+    from epub.builder import build_epub
+    out = build_epub(controller.project, controller.asset_store, tmp_path / "out.epub",
+                      metadata=BookMetadata(title="Mon Roman"))
+    preview.load_epub(str(out))
+    extract_dir = preview._extract_dir
+
+    preview.reset()
+
+    assert not extract_dir.exists()

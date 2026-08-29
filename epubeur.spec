@@ -22,6 +22,10 @@ qtbase_fr_source = str(Path(PySide6.__file__).parent / "translations" / "qtbase_
 # SPECPATH, injecté automatiquement par PyInstaller dans le namespace du spec.
 license_source = str(Path(SPECPATH) / "LICENSE")
 
+# CHANGELOG.md doit être présent au même endroit pour que le menu Aide > Historique des versions
+# (ui/changelog_dialog.py::_changelog_path) puisse l'afficher une fois compilé.
+changelog_source = str(Path(SPECPATH) / "CHANGELOG.md")
+
 # Icons/Epubeur.ico (icône de fenêtre) et Icons/Epubeur.png (splash screen de démarrage) sont
 # chargés au runtime (main.py::_window_icon_path / _splash_image_path, même logique que
 # license_source ci-dessus) — doivent donc être présents à côté de l'exe en mode onedir.
@@ -35,6 +39,7 @@ a = Analysis(
     datas=[
         (qtbase_fr_source, "PySide6/translations"),
         (license_source, "."),
+        (changelog_source, "."),
         (icons_ico_source, "Icons"),
         (icons_png_source, "Icons"),
     ],

@@ -34,9 +34,17 @@ def _save(data: dict) -> None:
         pass  # jamais bloquant — au pire, la liste ne persiste pas cette fois-ci
 
 
+def _comparison_key(path_str: str) -> str:
+    """Clé de comparaison insensible à la casse (Windows ne distingue pas la casse des chemins
+    de fichiers) — jamais utilisée pour l'affichage, seulement pour détecter qu'un même fichier
+    a déjà une entrée malgré une casse différente entre deux ouvertures (raccourci, chemin
+    réseau, saisie manuelle)."""
+    return path_str.lower()
+
+
 def _upsert(entries: list[dict], path: Path, extra: dict) -> list[dict]:
     key = str(path)
-    entries = [e for e in entries if e["path"] != key]
+    entries = [e for e in entries if _comparison_key(e["path"]) != _comparison_key(key)]
     entries.insert(0, {"path": key, "timestamp": datetime.now().isoformat(), **extra})
     return entries[:MAX_ENTRIES]
 
@@ -65,13 +73,15 @@ def list_recent_files() -> list[dict]:
 
 def remove_recent_project(path: Path) -> None:
     data = _load()
-    data["recent_projects"] = [e for e in data["recent_projects"] if e["path"] != str(path)]
+    key = _comparison_key(str(path))
+    data["recent_projects"] = [e for e in data["recent_projects"] if _comparison_key(e["path"]) != key]
     _save(data)
 
 
 def remove_recent_file(path: Path) -> None:
     data = _load()
-    data["recent_files"] = [e for e in data["recent_files"] if e["path"] != str(path)]
+    key = _comparison_key(str(path))
+    data["recent_files"] = [e for e in data["recent_files"] if _comparison_key(e["path"]) != key]
     _save(data)
 
 

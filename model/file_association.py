@@ -17,7 +17,7 @@ def ensure_epbz_association() -> None:
     import winreg
 
     exe_path = sys.executable
-    icon_path = str(Path(exe_path).parent / "Icons" / "Epubeur.ico")
+    icon_path = str(Path(sys._MEIPASS) / "Icons" / "Epubeur.ico")
     try:
         _ensure_progid(winreg, exe_path)
         _ensure_icon(winreg, icon_path)

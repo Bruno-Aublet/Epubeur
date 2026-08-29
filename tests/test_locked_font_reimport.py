@@ -57,6 +57,33 @@ def test_reimport_restores_locked_font_family_and_file(tmp_path):
     assert Path(lf.files[0].file_path).read_bytes() == ARIAL.read_bytes()
 
 
+@pytest.mark.skipif(not ARIAL.exists(), reason="Police système de test introuvable")
+def test_reimport_restores_locked_font_when_isbn_set(tmp_path):
+    """Régression : quand un ISBN est renseigné, book_uid devient urn:isbn:... (au lieu de
+    urn:uuid:...) et sert de clé d'obfuscation IDPF des polices — _extract_locked_fonts ne
+    reconnaissait que le motif urn:uuid: par regex, donc toute police figée devenait
+    irrécupérable au réimport dès qu'un ISBN était renseigné (perte silencieuse)."""
+    project, asset_store = _make_project_with_locked_fonts(
+        tmp_path, [LockedFont(family="SpecialNarrative", files=[LockedFontFile(file_path=str(ARIAL))])]
+    )
+
+    out = build_epub(
+        project, asset_store, tmp_path / "out.epub",
+        metadata=BookMetadata(title="Test", isbn="9782070360024"),
+    )
+
+    asset_store2 = AssetStore(tmp_path / "assets_import")
+    imported_doc, _imported_metadata, warnings = import_epub(out, asset_store2)
+
+    assert warnings == []
+    assert len(imported_doc.locked_fonts) == 1
+    lf = imported_doc.locked_fonts[0]
+    assert lf.family == "SpecialNarrative"
+    assert len(lf.files) == 1
+    assert Path(lf.files[0].file_path).exists()
+    assert Path(lf.files[0].file_path).read_bytes() == ARIAL.read_bytes()
+
+
 @pytest.mark.skipif(not (ARIAL.exists() and TIMES.exists()), reason="Polices système de test introuvables")
 def test_reimport_restores_two_simultaneous_locked_fonts(tmp_path):
     """Round-trip avec 2 polices figées simultanément : chacune doit être retrouvée avec le

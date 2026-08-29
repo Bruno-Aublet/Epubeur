@@ -5,7 +5,10 @@ from PySide6.QtGui import QFontDatabase
 _FILENAME_HINTS = [
     (("thin",), 100), (("extralight", "ultralight"), 200), (("light",), 300),
     (("medium",), 500), (("semibold", "demibold"), 600),
-    (("bold",), 700), (("extrabold", "ultrabold"), 800), (("black", "heavy"), 900),
+    # extrabold/ultrabold AVANT bold : "bold" est une sous-chaîne de "extrabold"/"ultrabold", et
+    # la boucle s'arrête au premier match — les tester dans le mauvais ordre classerait
+    # "SuperFont-ExtraBold.ttf" en poids 700 (Bold) au lieu de 800 (ExtraBold).
+    (("extrabold", "ultrabold"), 800), (("bold",), 700), (("black", "heavy"), 900),
 ]
 
 

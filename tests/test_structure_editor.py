@@ -216,6 +216,43 @@ def test_free_chapter_appears_as_top_level_item_among_parts(qapp):
     assert item1.data(0, PART_ROLE) == part.id
 
 
+def test_two_rapid_drops_before_timer_fires_apply_in_call_order(qapp):
+    """_on_rows_moved lit l'arbre Qt de façon synchrone mais diffère l'application du résultat
+    via QTimer.singleShot(0, ...) (nécessaire : Qt n'a pas fini de stabiliser son état interne
+    juste après un drop). Risque théorique identifié en audit : si un second drop se produisait
+    avant que le timer du premier ne se déclenche, le second appliquerait un new_items calculé
+    sur un arbre plus ancien, écrasant potentiellement le résultat du premier de façon non
+    intuitive. Ce test simule ce scénario directement (deux appels à _on_rows_moved avant de
+    laisser tourner l'event loop) pour vérifier le comportement réel plutôt que de le supposer."""
+    controller, editor = _make_editor(qapp)
+    doc = controller.project.document
+
+    chap_a = Chapter.create(title="A")
+    chap_b = Chapter.create(title="B")
+    doc.chapters[chap_a.id] = chap_a
+    doc.chapters[chap_b.id] = chap_b
+    controller.chapters_changed.emit()
+    controller.apply_reordered_structure([chap_a.id, chap_b.id])
+
+    from ui.structure_editor import CHAPTER_ROLE
+
+    # Premier "drop" : A et B sont déjà dans cet ordre dans l'arbre affiché, on simule le
+    # déclenchement de _on_rows_moved tel quel (équivalent à un drop qui ne change rien).
+    editor._on_rows_moved()
+
+    # Deuxième "drop" immédiat, avant que le timer du premier ne se soit exécuté : on modifie
+    # directement l'ordre des items top-level de l'arbre Qt pour simuler un second geste,
+    # puis on redéclenche _on_rows_moved sur ce nouvel état.
+    editor.tree.insertTopLevelItem(0, editor.tree.takeTopLevelItem(1))
+    assert editor.tree.topLevelItem(0).data(0, CHAPTER_ROLE) == chap_b.id
+    editor._on_rows_moved()
+
+    qapp.processEvents()  # laisse les deux QTimer.singleShot(0, ...) s'exécuter dans l'ordre
+
+    # Le second appel (le plus récent geste utilisateur) doit l'emporter : B avant A.
+    assert doc.structure.items == [chap_b.id, chap_a.id]
+
+
 def test_drag_drop_of_free_chapter_persists_new_position(qapp):
     controller, editor = _make_editor(qapp)
     doc = controller.project.document

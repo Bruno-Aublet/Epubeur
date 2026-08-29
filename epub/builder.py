@@ -105,9 +105,9 @@ def validate_document(
 
         for chapter in document.chapters.values():
             for para in iter_all_paragraphs(chapter.paragraphs):
-                if para.image is not None:
-                    chapter_label = chapter.title or "(chapitre sans titre)"
-                    _check_asset(para.image.asset_id, f"Image du chapitre « {chapter_label} »")
+                chapter_label = chapter.title or "(chapitre sans titre)"
+                for image in para.all_images():
+                    _check_asset(image.asset_id, f"Image du chapitre « {chapter_label} »")
 
     # Une note appelée (Run.note_id) sans corps correspondant dans document.footnotes produirait
     # un lien <a href="#note-..."> pointant vers une ancre absente — détecté trop tard et de façon
@@ -301,8 +301,8 @@ def build_epub(project: ProjectMeta, asset_store: AssetStore, output_path: Path,
     used_pov_asset_ids: set[str] = set()
     for chapter in document.chapters.values():
         for para in iter_all_paragraphs(chapter.paragraphs):
-            if para.image is not None:
-                used_pov_asset_ids.add(para.image.asset_id)
+            for image in para.all_images():
+                used_pov_asset_ids.add(image.asset_id)
     relevant_image_sizes = {
         aid: size for aid, size in document.image_display_sizes.items() if aid in used_pov_asset_ids
     }
@@ -316,7 +316,7 @@ def build_epub(project: ProjectMeta, asset_store: AssetStore, output_path: Path,
     # utilisé uniquement en interne par AssetStore pour la déduplication de stockage sur disque.
     # Sûr : le réimport d'un EPUB généré par Epubeur ne dépend jamais du nom de fichier
     # (data-epubeur-image porte l'asset_id indépendamment de src=, cf.
-    # epub/html_normalize.py::_find_image_anchor), et le CSS de taille/habillage cible aussi
+    # epub/html_normalize.py::_find_all_image_anchors), et le CSS de taille/habillage cible aussi
     # data-epubeur-image, jamais src= (epub/css.py::IMAGE_SIZE_RULE_TEMPLATE, IMAGE_WRAP_CSS).
     used_image_hrefs: set[str] = set()
     image_hrefs: dict[str, str] = {}
@@ -372,8 +372,8 @@ def build_epub(project: ProjectMeta, asset_store: AssetStore, output_path: Path,
         if chapter is None:
             return order_counter
         for para in iter_all_paragraphs(chapter.paragraphs):
-            if para.image is not None:
-                ensure_image_item(para.image.asset_id)
+            for image in para.all_images():
+                ensure_image_item(image.asset_id)
 
         chapter_title = chapter.title if (chapter.title_visible and chapter.title) else (chapter.title or "Chapitre")
         segments = split_chapter_into_segments(chapter.paragraphs)

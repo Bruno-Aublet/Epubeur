@@ -29,7 +29,11 @@ _IMAGE_SRC_RE = re.compile(r'src="\.\./images/([^".]+)\.[^"]+"')
 # CSS (Chromium/liseuses) même techniquement imbriqué, mais Qt Rich Text ignore ces deux
 # propriétés et rend l'image collée au texte, en ligne. On extrait donc l'<img> pour le placer
 # dans son propre <p align="center"> séparé, uniquement pour cet aperçu.
-_IMG_IN_P_RE = re.compile(r"<p([^>]*)>(\s*<img[^>]*/>)(.*?)</p>", re.DOTALL)
+# (?:\s*<img[^>]*/>)+ plutôt qu'une seule <img> : plusieurs images ancrées au même paragraphe
+# ODT (cf. Paragraph.extra_images) sont toutes écrites en tête du <p> par
+# epub/html_render.py::_paragraph_inner_html, chacune devant être isolée dans son propre <p>.
+_IMG_IN_P_RE = re.compile(r"<p([^>]*)>((?:\s*<img[^>]*/>)+)(.*?)</p>", re.DOTALL)
+_SINGLE_IMG_RE = re.compile(r"<img[^>]*/>")
 
 # QTextBrowser (moteur Rich Text de Qt) ignore silencieusement border-top sur <p>/<div> et ne
 # préserve pas la couleur d'un <hr> — seule une couleur de texte est fiablement rendue, d'où ce
@@ -155,8 +159,11 @@ class ChapterPreview(QTextBrowser):
         #   table entière) — colspan/rowspan n'affectent pas ce compte, seul le nombre réel de
         #   <td>/<th> émis par table_to_html compte.
         # - un Paragraph(image=..., runs=[...]) SANS habillage est scindé par _isolate_images en
-        #   2 blocs Qt distincts (image isolée + texte séparé) : les deux rangs doivent pointer
-        #   vers le MÊME paragraph_index, sinon les paragraphes suivants seraient décalés.
+        #   plusieurs blocs Qt distincts (une image isolée par image du paragraphe + un bloc texte
+        #   séparé si runs non vide) : tous les rangs doivent pointer vers le MÊME paragraph_index,
+        #   sinon les paragraphes suivants seraient décalés. Si UNE SEULE image du paragraphe a un
+        #   habillage, _isolate_images n'isole aucune image (tout reste dans le <p> d'origine) :
+        #   un seul bloc Qt dans ce cas, quel que soit le nombre d'images.
         block_rank = 1 if title else 0
         paragraph_index = 0
         for seg_idx, segment in enumerate(segments):
@@ -166,13 +173,21 @@ class ChapterPreview(QTextBrowser):
                 if isinstance(block, Table):
                     block_rank += sum(max(1, len(cell.paragraphs)) for row in block.rows for cell in row.cells) + 1
                 elif isinstance(block, Paragraph) and block.list_level == 0:
-                    wrapped = (block.image is not None and self.controller.project.document.image_wrap(
-                        block.image.asset_id) != ImageWrap.NONE)
+                    images = block.all_images()
+                    any_wrapped = any(
+                        self.controller.project.document.image_wrap(img.asset_id) != ImageWrap.NONE
+                        for img in images
+                    )
                     self._eligible_paragraph_block_ranks[block_rank] = paragraph_index
                     block_rank += 1
-                    if block.image is not None and block.runs and not wrapped:
-                        self._eligible_paragraph_block_ranks[block_rank] = paragraph_index
-                        block_rank += 1
+                    if images and not any_wrapped:
+                        extra_image_blocks = len(images) - 1  # 1 image déjà comptée ci-dessus
+                        for _ in range(extra_image_blocks):
+                            self._eligible_paragraph_block_ranks[block_rank] = paragraph_index
+                            block_rank += 1
+                        if block.runs:
+                            self._eligible_paragraph_block_ranks[block_rank] = paragraph_index
+                            block_rank += 1
                 # paragraphe de liste : aucun bloc top-level propre, pas mappé
                 paragraph_index += 1
 
@@ -220,17 +235,25 @@ class ChapterPreview(QTextBrowser):
 
     def _isolate_images(self, html: str) -> str:
         def replace(match: re.Match) -> str:
-            p_attrs, img_tag, rest = match.group(1), match.group(2).strip(), match.group(3)
+            p_attrs, img_tags_blob, rest = match.group(1), match.group(2), match.group(3)
+            img_tags = _SINGLE_IMG_RE.findall(img_tags_blob)
             # Une image avec un habillage réglé (gauche/droite) doit rester dans le MÊME <p> que
             # le texte qui l'accompagne pour que le texte s'enroule autour d'elle (float, cf.
             # epub/css.py) — l'isoler dans son propre <p align="center"> séparé, comme pour une
-            # image sans habillage, annulerait entièrement l'effet visuel voulu.
-            if 'data-epubeur-image-wrap="left"' in img_tag or 'data-epubeur-image-wrap="right"' in img_tag:
+            # image sans habillage, annulerait entièrement l'effet visuel voulu. Si UNE SEULE des
+            # images du groupe a un habillage, aucune n'est isolée : les séparer casserait
+            # l'ordre visuel image-habillée/texte que Writer/EPUB rendent côte à côte.
+            if any('data-epubeur-image-wrap="left"' in tag or 'data-epubeur-image-wrap="right"' in tag
+                   for tag in img_tags):
                 return match.group()
-            image_block = f'<p align="center">{img_tag}</p>'
+            # Une image par <p align="center"> séparé (pas toutes regroupées dans un seul <p>) :
+            # Qt Rich Text empile les blocs verticalement, donc plusieurs images resteraient
+            # groupées en un seul bloc si elles partageaient le même <p>, alors que le mapping
+            # de rangs (_eligible_paragraph_block_ranks ci-dessus) attend un bloc Qt par image.
+            image_blocks = "".join(f'<p align="center">{tag}</p>' for tag in img_tags)
             if rest.strip():
-                return f"{image_block}<p{p_attrs}>{rest}</p>"
-            return image_block
+                return f"{image_blocks}<p{p_attrs}>{rest}</p>"
+            return image_blocks
 
         return _IMG_IN_P_RE.sub(replace, html)
 
@@ -270,16 +293,21 @@ class ChapterPreview(QTextBrowser):
         """Retourne l'asset_id de l'image sous `pos` (coordonnées viewport), sinon None.
         QTextDocument (moteur Rich Text de Qt) ne conserve pas les attributs HTML custom
         (data-epubeur-image posé par epub/html_render.py) — seul le src résolu (chemin de
-        fichier local posé par _resolve_image_paths) est accessible via
-        QTextImageFormat.name(). AssetStore nomme chaque fichier "<asset_id>.<ext>"
-        (model/assets.py::path_for), donc le stem du chemin EST l'asset_id — pas besoin de
-        table de correspondance inverse."""
+        fichier local posé par _resolve_image_paths) est accessible via QTextImageFormat.name().
+        AssetStore nomme chaque fichier physique d'après son nom affiché, éventuellement renommé
+        par l'utilisateur (model/assets.py::path_for) — le stem du chemin n'est donc PLUS
+        l'asset_id ; on retrouve l'asset par correspondance de chemin (path_for) sur tous les
+        assets du document."""
         cursor = self.cursorForPosition(pos)
         char_format = cursor.charFormat()
         if not char_format.isImageFormat():
             return None
         image_url = char_format.toImageFormat().name()
-        return Path(QUrl(image_url).toLocalFile()).stem
+        local_path = Path(QUrl(image_url).toLocalFile())
+        for asset in self.controller.asset_store.all_assets():
+            if self.controller.asset_store.path_for(asset.id) == local_path:
+                return asset.id
+        return None
 
     def _paragraph_index_at(self, pos) -> int | None:
         """Retourne l'index dans chapter.paragraphs du paragraphe top-level (texte simple ou

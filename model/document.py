@@ -54,10 +54,25 @@ class Paragraph:
     # régénéré à chaque lecture ODT/réimport EPUB (new_id()), jamais stable entre deux imports.
     list_group_id: str | None = None
     image: ImageAnchor | None = None
+    # Deuxième image (et suivantes) ancrée(s) au caractère dans le MÊME paragraphe (ex : deux
+    # images côte à côte dans la même ligne, cas possible dans Writer) — un seul paragraphe ODF
+    # peut contenir plusieurs draw:frame porteurs d'image. `image` reste le champ historique
+    # (première image, ou unique dans l'immense majorité des cas) pour ne rien casser du code
+    # existant qui ne lit que .image ; extra_images ne contient jamais que la 2e image et au-delà.
+    # Utiliser all_images() pour parcourir toutes les images du paragraphe sans se soucier de
+    # cette distinction.
+    extra_images: list[ImageAnchor] = field(default_factory=list)
     page_break_before: bool = False
 
     def plain_text(self) -> str:
         return "".join(run.text for run in self.runs)
+
+    def all_images(self) -> list[ImageAnchor]:
+        """Toutes les images ancrées à ce paragraphe, dans leur ordre d'apparition (image
+        d'abord, puis extra_images) — jamais de None dans le résultat."""
+        images = [self.image] if self.image is not None else []
+        images.extend(self.extra_images)
+        return images
 
 
 @dataclass
@@ -267,22 +282,23 @@ class Document:
         candidates: list[str] = []
         for chapter in self.chapters.values():
             for para in iter_all_paragraphs(chapter.paragraphs):
-                if para.image is None or para.image.asset_id != asset_id:
-                    continue
-                text = para.image.alt_text.strip()
-                if text and text not in candidates:
-                    candidates.append(text)
+                for image in para.all_images():
+                    if image.asset_id != asset_id:
+                        continue
+                    text = image.alt_text.strip()
+                    if text and text not in candidates:
+                        candidates.append(text)
         return candidates
 
     def is_asset_referenced(self, asset_id: str) -> bool:
-        """True si asset_id est utilisé quelque part : au moins un Paragraph.image.asset_id (y
-        compris dans une cellule de tableau, via iter_all_paragraphs) dans n'importe quel
+        """True si asset_id est utilisé quelque part : au moins une image de Paragraph.all_images()
+        (y compris dans une cellule de tableau, via iter_all_paragraphs) dans n'importe quel
         chapitre, OU cover_asset_id, OU back_cover_asset_id."""
         if asset_id in (self.cover_asset_id, self.back_cover_asset_id):
             return True
         for chapter in self.chapters.values():
             for para in iter_all_paragraphs(chapter.paragraphs):
-                if para.image is not None and para.image.asset_id == asset_id:
+                if any(image.asset_id == asset_id for image in para.all_images()):
                     return True
         return False
 
@@ -315,7 +331,15 @@ class Document:
                 return
 
     def merge_chapters(self, id_a: str, id_b: str) -> str:
-        """Fusionne b dans a (concatène les paragraphes), retire b, remplace b par a dans structure."""
+        """Fusionne b dans a (concatène les paragraphes), retire b, remplace b par a dans structure.
+
+        id_a et id_b doivent désigner deux chapitres DIFFÉRENTS : avec le même id, chap_a et
+        chap_b seraient le même objet, et étendre une liste avec elle-même en la supprimant
+        juste après supprimerait le chapitre entièrement au lieu de le fusionner avec lui-même
+        (aucun appelant actuel ne peut déclencher ce cas — structure_editor.py ne propose jamais
+        que "fusionner avec le chapitre suivant" — mais l'API elle-même ne le garantissait pas)."""
+        if id_a == id_b:
+            raise ValueError("merge_chapters : id_a et id_b doivent désigner des chapitres différents")
         chap_a = self.chapters[id_a]
         chap_b = self.chapters[id_b]
         chap_a.paragraphs.extend(chap_b.paragraphs)

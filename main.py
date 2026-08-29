@@ -6,7 +6,10 @@ from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import QApplication, QSplashScreen
 
 from model.file_association import ensure_epbz_association
+from model.update_checker import UpdateChecker
+from model.version import __version__
 from ui.main_window import MainWindow
+from ui.update_dialog import UpdateAvailableDialog
 
 DEFAULT_FONT_POINT_SIZE = 11
 
@@ -69,6 +72,8 @@ def main():
     app.setFont(font)
 
     window = MainWindow()
+    app.aboutToQuit.connect(window.controller.cleanup_temp_dir)
+    app.aboutToQuit.connect(window.epub_preview.reset)
 
     epbz_path = epbz_argument(sys.argv[1:])
     if epbz_path is not None:
@@ -76,6 +81,15 @@ def main():
 
     window.show()
     splash.finish(window)
+
+    # Rattaché à window pour rester en vie le temps que la réponse réseau arrive (asynchrone,
+    # ne bloque jamais le démarrage) — silencieux en cas d'échec, cf. model/update_checker.py.
+    window.update_checker = UpdateChecker(__version__, window)
+    window.update_checker.update_available.connect(
+        lambda remote_version, release_url: UpdateAvailableDialog(remote_version, release_url, window).exec()
+    )
+    window.update_checker.check()
+
     sys.exit(app.exec())
 
 

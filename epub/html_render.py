@@ -2,7 +2,7 @@ import re
 from html import escape
 
 from model.assets import AssetStore
-from model.document import Chapter, ImageWrap, Paragraph, Run, Table, iter_all_paragraphs
+from model.document import Chapter, ImageAnchor, ImageWrap, Paragraph, Run, Table, iter_all_paragraphs
 from model.styles import ParagraphAlign, ParagraphKind, VerticalAlign
 from model.text_utils import flatten_to_single_line
 
@@ -106,31 +106,41 @@ def _paragraph_inner_html(paragraph: Paragraph, family_to_css_class: dict[str, s
     pour permettre l'imbrication d'une sous-liste à l'intérieur)."""
     inner = "".join(run_to_html(r, family_to_css_class, inline_locked_font_style) for r in paragraph.runs)
 
-    if paragraph.image is not None:
-        asset_id = paragraph.image.asset_id
-        extension = "png"
-        if asset_store is not None:
-            asset = asset_store.get(asset_id)
-            if asset is not None:
-                extension = asset.extension
-        # image_alt_texts (Document.image_alt_texts, une description par asset_id, saisie dans
-        # l'onglet Images) prime sur paragraph.image.alt_text (le svg:desc brut lu à l'import
-        # ODT pour CETTE occurrence précise) quand elle est renseignée — c'est la dernière
-        # intention explicite de l'utilisateur dans l'app.
-        alt_text = (image_alt_texts or {}).get(asset_id) or paragraph.image.alt_text
-        wrap = (image_wraps or {}).get(asset_id, ImageWrap.NONE)
-        wrap_attr = f' data-epubeur-image-wrap="{wrap.value}"' if wrap != ImageWrap.NONE else ""
-        # image_hrefs (calculé une fois pour tout le livre par epub/builder.py, avec gestion des
-        # collisions de nom lisible) prime sur le repli "{asset_id}.{extension}" — le hash n'est
-        # plus jamais le nom réellement écrit dans le zip EPUB une fois ce mapping fourni, seul
-        # data-epubeur-image continue de porter l'asset_id (utilisé au réimport, cf.
-        # epub/html_normalize.py::_find_image_anchor, indépendant du src=).
-        href = (image_hrefs or {}).get(asset_id, f"{asset_id}.{extension}")
-        img_tag = (f'<img src="../images/{href}" alt="{escape(alt_text)}" '
-                   f'data-epubeur-image="{asset_id}"{wrap_attr}/>')
-        inner = img_tag + inner
+    # Plusieurs images ancrées au même paragraphe (cas rare mais possible dans Writer : deux
+    # images côte à côte dans la même ligne) rendent chacune leur propre <img>, dans l'ordre —
+    # toutes préfixées au texte, comme le faisait déjà l'unique image historique.
+    img_tags = "".join(
+        _image_to_html_tag(image, asset_store, image_alt_texts, image_wraps, image_hrefs)
+        for image in paragraph.all_images()
+    )
+    return img_tags + inner
 
-    return inner
+
+def _image_to_html_tag(image: ImageAnchor, asset_store: AssetStore | None,
+                        image_alt_texts: dict[str, str] | None,
+                        image_wraps: dict[str, ImageWrap] | None,
+                        image_hrefs: dict[str, str] | None) -> str:
+    asset_id = image.asset_id
+    extension = "png"
+    if asset_store is not None:
+        asset = asset_store.get(asset_id)
+        if asset is not None:
+            extension = asset.extension
+    # image_alt_texts (Document.image_alt_texts, une description par asset_id, saisie dans
+    # l'onglet Images) prime sur image.alt_text (le svg:desc brut lu à l'import ODT pour CETTE
+    # occurrence précise) quand elle est renseignée — c'est la dernière intention explicite de
+    # l'utilisateur dans l'app.
+    alt_text = (image_alt_texts or {}).get(asset_id) or image.alt_text
+    wrap = (image_wraps or {}).get(asset_id, ImageWrap.NONE)
+    wrap_attr = f' data-epubeur-image-wrap="{wrap.value}"' if wrap != ImageWrap.NONE else ""
+    # image_hrefs (calculé une fois pour tout le livre par epub/builder.py, avec gestion des
+    # collisions de nom lisible) prime sur le repli "{asset_id}.{extension}" — le hash n'est
+    # plus jamais le nom réellement écrit dans le zip EPUB une fois ce mapping fourni, seul
+    # data-epubeur-image continue de porter l'asset_id (utilisé au réimport, cf.
+    # epub/html_normalize.py::_find_all_image_anchors, indépendant du src=).
+    href = (image_hrefs or {}).get(asset_id, f"{asset_id}.{extension}")
+    return (f'<img src="../images/{href}" alt="{escape(alt_text)}" '
+            f'data-epubeur-image="{asset_id}"{wrap_attr}/>')
 
 
 def paragraph_to_html(paragraph: Paragraph, family_to_css_class: dict[str, str] | None = None,

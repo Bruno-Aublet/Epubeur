@@ -1,4 +1,5 @@
 import re
+import shutil
 import tempfile
 import zipfile
 from pathlib import Path
@@ -66,9 +67,15 @@ class EpubPreview(QWidget):
 
     def load_epub(self, epub_path: str) -> None:
         self.content_stack.setCurrentWidget(self.reader)
+        previous_extract_dir = self._extract_dir
         self._extract_dir = Path(tempfile.mkdtemp(prefix="epubeur_preview_"))
         with zipfile.ZipFile(epub_path) as zf:
             zf.extractall(self._extract_dir)
+        # Nettoyé seulement maintenant, une fois le nouveau dossier prêt à remplacer l'ancien
+        # dans self.view — sinon régénérer l'EPUB plusieurs fois par session (flux normal de
+        # relecture) accumule un dossier temp complet par génération, jamais supprimé.
+        if previous_extract_dir is not None:
+            shutil.rmtree(previous_extract_dir, ignore_errors=True)
 
         book = epub.read_epub(epub_path)
 
@@ -103,6 +110,8 @@ class EpubPreview(QWidget):
     def reset(self) -> None:
         """Revient à l'état vide (message d'invitation) — appelé à la fermeture du projet,
         pour ne pas laisser l'aperçu d'un projet précédent visible après sa fermeture."""
+        if self._extract_dir is not None:
+            shutil.rmtree(self._extract_dir, ignore_errors=True)
         self._extract_dir = None
         self._chapter_files = []
         self.chapter_combo.clear()

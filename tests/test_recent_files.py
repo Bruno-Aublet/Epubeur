@@ -75,6 +75,25 @@ def test_reaccessing_existing_path_moves_to_top_without_duplicate(tmp_path, monk
     assert entries[1]["path"] == str(b)
 
 
+def test_reaccessing_same_path_with_different_case_does_not_duplicate(tmp_path, monkeypatch):
+    """Régression : Windows est insensible à la casse pour les chemins de fichiers, mais
+    _upsert comparait les chemins par égalité de chaîne stricte — rouvrir le même .epbz via un
+    chemin de casse différente (raccourci, chemin réseau, saisie manuelle) créait une deuxième
+    entrée pour le même fichier au lieu de faire remonter l'entrée existante."""
+    _use_path(tmp_path, monkeypatch)
+    lower_path = tmp_path / "monroman.epbz"
+    upper_path = Path(str(tmp_path).upper()) / "MONROMAN.EPBZ"
+
+    add_recent_project(lower_path)
+    add_recent_project(upper_path)
+
+    entries = list_recent_projects()
+    assert len(entries) == 1
+    # L'entrée conservée reflète la casse de la dernière ouverture (comportement d'upsert
+    # normal), jamais une casse forcée artificiellement pour l'affichage.
+    assert entries[0]["path"] == str(upper_path)
+
+
 def test_cap_at_ten_evicts_oldest(tmp_path, monkeypatch):
     _use_path(tmp_path, monkeypatch)
     for i in range(11):
@@ -162,6 +181,17 @@ def test_remove_recent_file(tmp_path, monkeypatch):
     remove_recent_file(file_path)
 
     assert list_recent_files() == []
+
+
+def test_remove_recent_project_ignores_case(tmp_path, monkeypatch):
+    """Même correctif que l'upsert : la suppression doit aussi être insensible à la casse,
+    sinon retirer une entrée via un chemin de casse différente de celle stockée ne ferait rien."""
+    _use_path(tmp_path, monkeypatch)
+    add_recent_project(tmp_path / "monroman.epbz")
+
+    remove_recent_project(Path(str(tmp_path).upper()) / "MONROMAN.EPBZ")
+
+    assert list_recent_projects() == []
 
 
 def test_add_recent_file_stores_kind(tmp_path, monkeypatch):

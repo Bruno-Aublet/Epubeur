@@ -122,19 +122,16 @@ def _classes_of(el) -> list[str]:
     return list(raw)
 
 
-def _find_image_anchor(node) -> str | None:
-    img = node.find("img")
-    if img is None:
-        return None
-    return img.get("data-epubeur-image") or img.get("src")
-
-
-def _find_image_wrap(node) -> ImageWrap:
-    img = node.find("img")
-    if img is None:
-        return ImageWrap.NONE
-    raw = img.get("data-epubeur-image-wrap")
-    return {"left": ImageWrap.LEFT, "right": ImageWrap.RIGHT}.get(raw, ImageWrap.NONE)
+def _find_all_image_anchors(node) -> list[ImageAnchor]:
+    """Toutes les <img> directement dans node (pas seulement la première) — pendant de
+    epub/html_render.py::_paragraph_inner_html qui peut écrire plusieurs <img> à la suite dans
+    le même <p> quand un paragraphe ODT source avait plusieurs images ancrées au caractère."""
+    anchors = []
+    for img in node.find_all("img"):
+        href = img.get("data-epubeur-image") or img.get("src")
+        if href:
+            anchors.append(ImageAnchor(asset_id=href))
+    return anchors
 
 
 def _int_attr(el, name: str, default: int) -> int:
@@ -175,9 +172,11 @@ def _table_from_html(table_el, css_resolver: CssResolver) -> Table:
                         base_fmt = css_resolver.resolve_element_format("p", _classes_of(child),
                                                                         child.get("style"), CharFormat())
                         runs = _collect_runs(child, css_resolver, base_fmt)
-                        image_href = _find_image_anchor(child)
-                        image_anchor = ImageAnchor(asset_id=image_href) if image_href else None
-                        inner_paragraphs.append(Paragraph(kind=ParagraphKind.BODY, runs=runs, image=image_anchor))
+                        images = _find_all_image_anchors(child)
+                        inner_paragraphs.append(Paragraph(
+                            kind=ParagraphKind.BODY, runs=runs,
+                            image=images[0] if images else None, extra_images=images[1:],
+                        ))
             else:
                 # Cellule sans <p> interne (texte nu direct dans <td>, cas EPUB externe généré
                 # par un autre outil) : un seul Paragraph de secours reconstruit à partir de
@@ -278,14 +277,17 @@ def _visit_container(container, css_resolver: CssResolver, paragraphs: "list[Par
             base_fmt = css_resolver.resolve_element_format("p", classes, el.get("style"), CharFormat())
             runs = _collect_runs(el, css_resolver, base_fmt)
 
-            image_href = _find_image_anchor(el)
-            image_anchor = ImageAnchor(asset_id=image_href) if image_href else None
-            if image_href:
-                wrap = _find_image_wrap(el)
+            images = _find_all_image_anchors(el)
+            for img_tag, image in zip(el.find_all("img"), images):
+                raw = img_tag.get("data-epubeur-image-wrap")
+                wrap = {"left": ImageWrap.LEFT, "right": ImageWrap.RIGHT}.get(raw, ImageWrap.NONE)
                 if wrap != ImageWrap.NONE:
-                    local_image_wraps[image_href] = wrap
+                    local_image_wraps[image.asset_id] = wrap
 
-            paragraphs.append(Paragraph(kind=ParagraphKind.BODY, align=align, runs=runs, image=image_anchor))
+            paragraphs.append(Paragraph(
+                kind=ParagraphKind.BODY, align=align, runs=runs,
+                image=images[0] if images else None, extra_images=images[1:],
+            ))
         elif tag_name == "table":
             paragraphs.append(_table_from_html(el, css_resolver))
 

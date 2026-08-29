@@ -13,7 +13,7 @@ def test_license_path_resolves_to_repo_root_in_dev_mode():
     assert path.exists()
 
 
-def test_license_path_resolves_next_to_exe_when_frozen(monkeypatch):
+def test_license_path_resolves_under_meipass_when_frozen(monkeypatch):
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "_MEIPASS", r"C:\Epubeur\_internal", raising=False)
 

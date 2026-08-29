@@ -1,9 +1,17 @@
 import re
 
+# Tiret ASCII (U+002D) + variantes typographiques qu'un copier-coller depuis une fiche éditeur/
+# librairie en ligne peut introduire (le CSS de nombreux sites rend les ISBN avec un en-dash) :
+# U+2010 hyphen, U+2011 non-breaking hyphen, U+2012 figure dash, U+2013 en dash, U+2014 em dash,
+# U+2212 minus sign. Sans ça, un ISBN par ailleurs valide était rejeté avec un message trompeur
+# ("clé de contrôle incorrecte") qui bloquait la génération de l'EPUB.
+_DASH_CHARS = "‐‑‒–—−-"  # tiret ASCII en dernier : évite une plage de caractères accidentelle
+_STRIP_RE = re.compile(rf"[\s{_DASH_CHARS}]")
+
 
 def normalize_isbn(raw: str) -> str:
     """Retire tirets/espaces, conserve les chiffres et le 'X' terminal (clé de contrôle ISBN-10)."""
-    return re.sub(r"[\s-]", "", raw.strip().upper())
+    return _STRIP_RE.sub("", raw.strip().upper())
 
 
 def _isbn10_check_digit_valid(digits: str) -> bool:

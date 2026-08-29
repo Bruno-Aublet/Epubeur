@@ -24,10 +24,10 @@ def build_accessibility_metadata(document: Document) -> list[tuple[str, str]]:
     all_images_have_alt_text = True
     for chapter in document.chapters.values():
         for para in iter_all_paragraphs(chapter.paragraphs):
-            if para.image is not None:
-                asset_id = para.image.asset_id
+            for image in para.all_images():
+                asset_id = image.asset_id
                 image_asset_ids.add(asset_id)
-                alt_text = document.image_alt_texts.get(asset_id) or para.image.alt_text
+                alt_text = document.image_alt_texts.get(asset_id) or image.alt_text
                 if not alt_text.strip():
                     all_images_have_alt_text = False
 

@@ -53,6 +53,70 @@ def test_roundtrip_preserves_document_image_and_font_bytes(tmp_path):
     assert loaded.epbz_path == epbz_path
 
 
+def test_roundtrip_preserves_extra_images_on_same_paragraph(tmp_path):
+    """Régression : Paragraph.extra_images (deuxième image et suivantes ancrées au même
+    paragraphe, cf. odt/chapter_detector.py) doit survivre au cycle complet
+    save_project_epbz -> écriture .epbz sur disque -> load_project_epbz, pas seulement à
+    document_to_dict/document_from_dict pris isolément."""
+    asset_store = AssetStore(tmp_path / "assets")
+    asset_a = asset_store.ingest_bytes(b"premiere-image-bytes", "premiere.png", AssetRole.CHAPTER_POV)
+    asset_b = asset_store.ingest_bytes(b"seconde-image-bytes", "seconde.png", AssetRole.CHAPTER_POV)
+
+    chapter = Chapter.create(title="Chapitre Un")
+    chapter.paragraphs = [Paragraph(
+        image=ImageAnchor(asset_id=asset_a.id, alt_text="Première"),
+        extra_images=[ImageAnchor(asset_id=asset_b.id, alt_text="Seconde")],
+    )]
+    project = ProjectMeta()
+    project.document.add_chapter(chapter)
+
+    epbz_path = tmp_path / "MonRoman.epbz"
+    save_project_epbz(project, asset_store, epbz_path)
+    loaded, _extract_dir, warnings = load_project_epbz(epbz_path)
+
+    assert warnings == []
+    chapter_id = next(iter(project.document.chapters))
+    loaded_para = loaded.document.chapters[chapter_id].paragraphs[0]
+    assert loaded_para.image.asset_id == asset_a.id
+    assert loaded_para.image.alt_text == "Première"
+    assert len(loaded_para.extra_images) == 1
+    assert loaded_para.extra_images[0].asset_id == asset_b.id
+    assert loaded_para.extra_images[0].alt_text == "Seconde"
+
+
+def test_save_deduplicates_identical_locked_font_files(tmp_path):
+    """Régression : deux LockedFontFile différents mais au contenu binaire IDENTIQUE (ex.
+    l'utilisateur pointe volontairement Bold vers une copie du même fichier que Regular)
+    produisaient le même arcname "fonts/<sha256>.<ext>" — save_project_epbz écrivait alors deux
+    fois la même entrée dans le zip (UserWarning: Duplicate name, gaspillage d'espace)."""
+    import warnings as warnings_module
+
+    asset_store = AssetStore(tmp_path / "assets")
+    project = ProjectMeta()
+
+    font_file_a = tmp_path / "Police-Regular.ttf"
+    font_file_b = tmp_path / "Police-Copie.ttf"
+    identical_bytes = b"fake ttf bytes, identiques dans les deux fichiers"
+    font_file_a.write_bytes(identical_bytes)
+    font_file_b.write_bytes(identical_bytes)
+
+    project.document.locked_fonts = [
+        LockedFont(family="Police", files=[
+            LockedFontFile(file_path=str(font_file_a)),
+            LockedFontFile(file_path=str(font_file_b)),
+        ])
+    ]
+
+    epbz_path = tmp_path / "MonRoman.epbz"
+    with warnings_module.catch_warnings():
+        warnings_module.simplefilter("error")  # une UserWarning ici doit faire échouer le test
+        save_project_epbz(project, asset_store, epbz_path)
+
+    with zipfile.ZipFile(epbz_path) as zf:
+        font_entries = [n for n in zf.namelist() if n.startswith("fonts/")]
+    assert len(font_entries) == len(set(font_entries)) == 1
+
+
 def test_locked_font_survives_original_external_file_being_deleted(tmp_path):
     """Cœur de la promesse .epbz : la police est embarquée dans l'archive, donc supprimer le
     fichier externe d'origine APRÈS la sauvegarde ne doit plus jamais casser le rechargement —
@@ -183,6 +247,26 @@ def test_controller_save_and_load_roundtrip(tmp_path, qapp):
     assert new_controller.project.epbz_path == epbz_path
 
 
+def test_load_project_from_removes_previous_temp_dir(tmp_path, qapp):
+    """Régression : load_project_from() écrasait _temp_assets_dir par le nouveau dossier extrait
+    sans jamais supprimer le précédent — plusieurs ouvertures de projet dans la même session
+    accumulaient des dossiers orphelins (potentiellement avec toutes les images) dans %TEMP%."""
+    controller = ProjectController()
+    chapter = Chapter.create(title="Un chapitre")
+    controller.project.document.add_chapter(chapter)
+    epbz_path = tmp_path / "Projet.epbz"
+    assert controller.save_project_as(epbz_path)
+
+    new_controller = ProjectController()
+    first_temp_dir = new_controller._temp_assets_dir
+    assert first_temp_dir.exists()
+
+    new_controller.load_project_from(epbz_path)
+
+    assert not first_temp_dir.exists()
+    assert new_controller._temp_assets_dir.exists()
+
+
 def test_roundtrip_preserves_image_added_via_add_image_as_chapter(tmp_path, qapp):
     controller = ProjectController()
     image_path = tmp_path / "personnage.jpg"
@@ -222,6 +306,45 @@ def test_undo_after_everywhere_removal_fully_restores_image(qapp):
     restored_chapter = controller.project.document.chapters[chapter.id]
     assert restored_chapter.paragraphs[0].image.asset_id == asset.id
     assert controller.asset_store.get(asset.id) is not None
+
+
+def test_load_project_from_migrates_legacy_hash_named_image_and_resaves_epbz(tmp_path, qapp):
+    """Régression : un .epbz créé avant que rename() ne renomme le fichier physique contient
+    l'image encore nommée "<hash>.<ext>" dans assets/images/ alors que original_filename porte
+    déjà le nom renommé (cf. model/assets.py::AssetStore._load_index). La migration à l'ouverture
+    doit se refléter dans le .epbz sur disque SANS attendre un Enregistrer explicite de
+    l'utilisateur — sinon rouvrir le même fichier sans le modifier ne change jamais rien."""
+    controller = ProjectController()
+    asset = controller.asset_store.ingest_bytes(b"\xff\xd8\xff\xe0fakejpeg", "old_name.jpg", AssetRole.CHAPTER_POV)
+    chapter = Chapter.create(title="Chapitre")
+    chapter.paragraphs = [Paragraph(image=ImageAnchor(asset_id=asset.id))]
+    controller.project.document.add_chapter(chapter)
+    epbz_path = tmp_path / "Projet.epbz"
+    assert controller.save_project_as(epbz_path)
+
+    # Simule l'état "legacy" : le fichier a été renommé après coup dans le .epbz déjà sauvegardé,
+    # comme l'aurait laissé une version antérieure au correctif (rename() qui ne touchait jamais
+    # au fichier physique).
+    controller.asset_store.rename(asset.id, "Nouveau Nom")
+    legacy_path = controller.asset_store.images_dir / f"{asset.id}.jpg"
+    controller.asset_store.path_for(asset.id).replace(legacy_path)
+    assert controller.save_project_as(epbz_path)
+    with zipfile.ZipFile(epbz_path) as zf:
+        names = zf.namelist()
+    assert f"assets/images/{asset.id}.jpg" in names
+    assert not any(n.endswith("Nouveau Nom.jpg") for n in names)
+
+    new_controller = ProjectController()
+    new_controller.load_project_from(epbz_path)
+
+    reloaded_chapter = next(iter(new_controller.project.document.chapters.values()))
+    reloaded_asset_id = reloaded_chapter.paragraphs[0].image.asset_id
+    assert new_controller.asset_store.path_for(reloaded_asset_id).name == "Nouveau Nom.jpg"
+
+    with zipfile.ZipFile(epbz_path) as zf:
+        names_after = zf.namelist()
+    assert any(n.endswith("Nouveau Nom.jpg") for n in names_after)
+    assert f"assets/images/{asset.id}.jpg" not in names_after
 
 
 def test_controller_save_without_epbz_path_errors(qapp):

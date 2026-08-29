@@ -49,3 +49,30 @@ def test_can_import_again_after_close(qapp):
 
     controller.import_odt(FIXTURE)
     assert len(controller.project.document.chapters) == 2
+
+
+def test_close_project_removes_previous_temp_dir(qapp):
+    """Régression : close_project() créait un nouveau dossier temporaire sans jamais supprimer
+    le précédent — plusieurs fermetures dans la même session accumulaient des dossiers
+    orphelins dans %TEMP%."""
+    controller = ProjectController()
+    first_temp_dir = controller._temp_assets_dir
+    assert first_temp_dir.exists()
+
+    controller.close_project()
+
+    assert not first_temp_dir.exists()
+    assert controller._temp_assets_dir.exists()
+    assert controller._temp_assets_dir != first_temp_dir
+
+
+def test_cleanup_temp_dir_removes_current_temp_dir(qapp):
+    """cleanup_temp_dir() (appelée à la fermeture de l'app, cf. main.py) doit supprimer le
+    dernier dossier temporaire encore en usage, qu'aucun remplacement ultérieur ne nettoiera."""
+    controller = ProjectController()
+    temp_dir = controller._temp_assets_dir
+    assert temp_dir.exists()
+
+    controller.cleanup_temp_dir()
+
+    assert not temp_dir.exists()
