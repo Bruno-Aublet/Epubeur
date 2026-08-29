@@ -5,11 +5,13 @@ from model.recent_files import (
     add_recent_file,
     add_recent_project,
     format_recent_timestamp,
+    get_last_project_dir,
     list_recent_files,
     list_recent_projects,
     prune_missing,
     remove_recent_file,
     remove_recent_project,
+    set_last_project_dir,
 )
 
 # Note : la fixture autouse isolate_recent_files (tests/conftest.py) redirige déjà
@@ -21,6 +23,30 @@ def _use_path(tmp_path, monkeypatch) -> Path:
     path = tmp_path / "recent_files.json"
     monkeypatch.setattr(recent_files_module, "_recent_files_path", lambda: path)
     return path
+
+
+def test_get_last_project_dir_none_when_never_set(tmp_path, monkeypatch):
+    _use_path(tmp_path, monkeypatch)
+
+    assert get_last_project_dir() is None
+
+
+def test_set_then_get_last_project_dir_roundtrip(tmp_path, monkeypatch):
+    _use_path(tmp_path, monkeypatch)
+    a_dir = tmp_path / "MesProjets"
+    a_dir.mkdir()
+
+    set_last_project_dir(a_dir)
+
+    assert get_last_project_dir() == a_dir
+
+
+def test_get_last_project_dir_none_when_directory_no_longer_exists(tmp_path, monkeypatch):
+    _use_path(tmp_path, monkeypatch)
+    a_dir = tmp_path / "Disparu"
+    set_last_project_dir(a_dir)
+
+    assert get_last_project_dir() is None
 
 
 def test_add_recent_project_then_list_returns_it(tmp_path, monkeypatch):

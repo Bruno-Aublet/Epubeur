@@ -4,7 +4,13 @@ from PySide6.QtWidgets import QMessageBox
 
 from model.document import Chapter
 from model.project import SourceOdtFile
-from model.recent_files import add_recent_file, add_recent_project, list_recent_files
+from model.recent_files import (
+    add_recent_file,
+    add_recent_project,
+    get_last_project_dir,
+    list_recent_files,
+    set_last_project_dir,
+)
 from ui.main_window import MainWindow
 from ui.reimport_choice_dialog import ReimportChoice, ReimportChoiceDialog
 
@@ -79,6 +85,61 @@ def test_default_epbz_dir_creates_documents_epubeur(qapp, monkeypatch, tmp_path)
 
     assert result == tmp_path / "Documents" / "Epubeur"
     assert result.is_dir()
+
+
+def test_default_epbz_dir_uses_last_project_dir_when_available(qapp, monkeypatch, tmp_path):
+    window = MainWindow()
+    last_dir = tmp_path / "MesProjets"
+    last_dir.mkdir()
+    set_last_project_dir(last_dir)
+
+    result = window._default_epbz_dir()
+
+    assert result == last_dir
+
+
+def test_default_epbz_dir_falls_back_when_last_project_dir_missing(qapp, monkeypatch, tmp_path):
+    window = MainWindow()
+    missing_dir = tmp_path / "Disparu"
+    set_last_project_dir(missing_dir)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    result = window._default_epbz_dir()
+
+    assert result == tmp_path / "Documents" / "Epubeur"
+
+
+def test_save_project_as_remembers_chosen_directory(qapp, monkeypatch, tmp_path):
+    window = MainWindow()
+    chosen_dir = tmp_path / "SonDossier"
+    chosen_dir.mkdir()
+    epbz_path = chosen_dir / "projet.epbz"
+
+    monkeypatch.setattr(
+        "ui.main_window.QFileDialog.getSaveFileName", lambda *a, **k: (str(epbz_path), ""))
+    monkeypatch.setattr(window.controller, "save_project_as", lambda p: True)
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: None)
+
+    window._save_project_as()
+
+    assert get_last_project_dir() == chosen_dir
+
+
+def test_open_project_remembers_chosen_directory(qapp, monkeypatch, tmp_path):
+    window = MainWindow()
+    chosen_dir = tmp_path / "SonAutreDossier"
+    chosen_dir.mkdir()
+    epbz_path = chosen_dir / "projet.epbz"
+
+    monkeypatch.setattr(
+        "ui.main_window.QFileDialog.getOpenFileName", lambda *a, **k: (str(epbz_path), ""))
+    load_calls = []
+    monkeypatch.setattr(window.controller, "load_project_from", lambda p: load_calls.append(p))
+
+    window._open_project()
+
+    assert get_last_project_dir() == chosen_dir
+    assert load_calls == [epbz_path]
 
 
 def test_open_recent_project_guard_blocks_load_when_cancelled(qapp, monkeypatch, tmp_path):

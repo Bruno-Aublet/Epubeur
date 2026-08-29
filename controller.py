@@ -271,6 +271,9 @@ class ProjectController(QObject):
         font_counts = scan_fonts(source, resolver)
         for name, count in font_counts.items():
             self._font_counts[name] = self._font_counts.get(name, 0) + count
+            self.project.document.known_font_counts[name] = (
+                self.project.document.known_font_counts.get(name, 0) + count
+            )
 
         self.chapters_changed.emit()
         self.assets_changed.emit()
@@ -390,6 +393,9 @@ class ProjectController(QObject):
         font_counts = scan_fonts(source, resolver)
         for name, count in font_counts.items():
             self._font_counts[name] = self._font_counts.get(name, 0) + count
+            self.project.document.known_font_counts[name] = (
+                self.project.document.known_font_counts.get(name, 0) + count
+            )
 
         self.chapters_changed.emit()
         self.structure_changed.emit()  # replace_chapter_id modifie items/Part.chapter_ids en place
@@ -492,6 +498,9 @@ class ProjectController(QObject):
 
         for name, count in scan_fonts_in_document(imported_document).items():
             self._font_counts[name] = self._font_counts.get(name, 0) + count
+            self.project.document.known_font_counts[name] = (
+                self.project.document.known_font_counts.get(name, 0) + count
+            )
 
         self.chapters_changed.emit()
         self.structure_changed.emit()
@@ -989,7 +998,7 @@ class ProjectController(QObject):
         self.project = project
         self._temp_assets_dir = extract_dir
         self.asset_store = AssetStore(extract_dir / "assets")
-        self._font_counts = dict(scan_fonts_in_document(project.document))
+        self._font_counts = dict(project.document.known_font_counts)
         # Un projet sauvegardé avant l'introduction de image_alt_texts peut contenir des
         # ImageAnchor avec un alt_text (svg:desc) jamais reporté vers la description globale.
         self._backfill_image_alt_texts_from_paragraphs()

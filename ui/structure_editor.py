@@ -88,7 +88,7 @@ class StructureEditor(QWidget):
         toolbar = QHBoxLayout()
         self.new_part_btn = QPushButton("Nouvelle partie")
         self.rename_btn = QPushButton("Renommer")
-        self.assign_btn = QPushButton("Assigner à une partie…")
+        self.assign_btn = QPushButton("Assigner à une partie")
         self.unassign_btn = QPushButton("Retirer de la partie")
         self.merge_btn = QPushButton("Fusionner avec le chapitre suivant")
         self.split_btn = QPushButton("Scinder le chapitre")
@@ -104,7 +104,7 @@ class StructureEditor(QWidget):
         root_layout.addLayout(toolbar)
 
         hint = QLabel("Astuce : sélectionnez plusieurs chapitres (Ctrl+clic ou Shift+clic), "
-                       "puis cliquez sur « Assigner à une partie… ».")
+                       "puis cliquez sur « Assigner à une partie ».")
         hint.setStyleSheet("color: #888;")
         root_layout.addWidget(hint)
 
@@ -506,7 +506,7 @@ class StructureEditor(QWidget):
             menu.addAction("Supprimer", self._delete_selected)
         elif chapter_id is not None:
             menu.addAction("Renommer", self._rename_selected)
-            menu.addAction("Assigner à une partie…", self._assign_selected_to_part)
+            menu.addAction("Assigner à une partie", self._assign_selected_to_part)
             menu.addAction("Retirer de la partie", self._unassign_selected)
             menu.addSeparator()
             menu.addAction("Fusionner avec le chapitre suivant", self._merge_selected_with_next)

@@ -22,11 +22,22 @@ qtbase_fr_source = str(Path(PySide6.__file__).parent / "translations" / "qtbase_
 # SPECPATH, injecté automatiquement par PyInstaller dans le namespace du spec.
 license_source = str(Path(SPECPATH) / "LICENSE")
 
+# Icons/Epubeur.ico (icône de fenêtre) et Icons/Epubeur.png (splash screen de démarrage) sont
+# chargés au runtime (main.py::_window_icon_path / _splash_image_path, même logique que
+# license_source ci-dessus) — doivent donc être présents à côté de l'exe en mode onedir.
+icons_ico_source = str(Path(SPECPATH) / "Icons" / "Epubeur.ico")
+icons_png_source = str(Path(SPECPATH) / "Icons" / "Epubeur.png")
+
 a = Analysis(
     ["main.py"],
     pathex=[],
     binaries=[],
-    datas=[(qtbase_fr_source, "PySide6/translations"), (license_source, ".")],
+    datas=[
+        (qtbase_fr_source, "PySide6/translations"),
+        (license_source, "."),
+        (icons_ico_source, "Icons"),
+        (icons_png_source, "Icons"),
+    ],
     # winreg n'est importé qu'à l'intérieur d'une fonction (model/file_association.py), pas en
     # tête de module — l'analyseur statique de PyInstaller le détecte normalement quand même,
     # mais on le déclare explicitement ici pour ne courir aucun risque : sans lui, l'association
@@ -60,6 +71,7 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     version="version_info.txt",
+    icon=str(Path(SPECPATH) / "Icons" / "Epubeur.ico"),
 )
 
 coll = COLLECT(

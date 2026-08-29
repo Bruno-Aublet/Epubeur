@@ -14,4 +14,9 @@ def scan_fonts_in_document(document: Document) -> Counter:
             for run in paragraph.runs:
                 if run.fmt.font_name:
                     counts[run.fmt.font_name] += 1
+    for paragraphs in document.footnotes.values():
+        for paragraph in iter_all_paragraphs(paragraphs):
+            for run in paragraph.runs:
+                if run.fmt.font_name:
+                    counts[run.fmt.font_name] += 1
     return counts

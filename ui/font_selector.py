@@ -109,7 +109,7 @@ class FontMatchDialog(QDialog):
         layout.addWidget(self.list_widget)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        browse_btn = buttons.addButton("Parcourir manuellement…", QDialogButtonBox.ButtonRole.ActionRole)
+        browse_btn = buttons.addButton("Parcourir manuellement", QDialogButtonBox.ButtonRole.ActionRole)
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
         browse_btn.clicked.connect(self._browse_manually)
@@ -161,7 +161,7 @@ class FontSelector(QWidget):
         right.addWidget(self.preview)
 
         actions = QHBoxLayout()
-        self.lock_btn = QPushButton("Figer cette police…")
+        self.lock_btn = QPushButton("Figer cette police")
         self.unlock_btn = QPushButton("Déverrouiller cette police")
         actions.addWidget(self.lock_btn)
         actions.addWidget(self.unlock_btn)

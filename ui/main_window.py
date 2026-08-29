@@ -1,17 +1,20 @@
 from pathlib import Path
 
-from PySide6.QtGui import QKeySequence
+from PySide6.QtCore import QUrl
+from PySide6.QtGui import QDesktopServices, QKeySequence
 from PySide6.QtWidgets import QFileDialog, QMainWindow, QMessageBox, QTabWidget
 
 from controller import ProjectController
 from model.recent_files import (
     add_recent_file,
     format_recent_timestamp,
+    get_last_project_dir,
     list_recent_files,
     list_recent_projects,
     prune_missing,
     remove_recent_file,
     remove_recent_project,
+    set_last_project_dir,
 )
 from model.version import __version__
 from ui.cover_panel import CoverPanel
@@ -74,10 +77,10 @@ class MainWindow(QMainWindow):
     def _build_menu(self) -> None:
         menu = self.menuBar().addMenu("Projet")
 
-        save_action = menu.addAction("Enregistrer le projet…")
+        save_action = menu.addAction("Enregistrer le projet")
         save_action.triggered.connect(self._save_project_as)
 
-        open_action = menu.addAction("Ouvrir un projet…")
+        open_action = menu.addAction("Ouvrir un projet")
         open_action.triggered.connect(self._open_project)
 
         menu.addSeparator()
@@ -104,8 +107,14 @@ class MainWindow(QMainWindow):
         self.controller.undo_availability_changed.connect(self._update_undo_actions)
 
         help_menu = self.menuBar().addMenu("Aide")
-        about_action = help_menu.addAction("À propos d'Epubeur…")
+        github_action = help_menu.addAction("Dépôt GitHub")
+        github_action.triggered.connect(self._open_github_repo)
+        help_menu.addSeparator()
+        about_action = help_menu.addAction("À propos d'Epubeur")
         about_action.triggered.connect(self._show_about_dialog)
+
+    def _open_github_repo(self) -> None:
+        QDesktopServices.openUrl(QUrl("https://github.com/Bruno-Aublet/Epubeur"))
 
     def _show_about_dialog(self) -> None:
         AboutDialog(self).exec()
@@ -129,9 +138,12 @@ class MainWindow(QMainWindow):
         return reply == QMessageBox.StandardButton.Yes
 
     def _default_epbz_dir(self) -> Path:
-        """Dossier proposé par défaut dans les boîtes de dialogue Enregistrer/Ouvrir — toujours
-        Documents/Epubeur, jamais mémorisé/dépendant de la session (simple et stable plutôt
-        qu'un dernier-dossier-utilisé). Créé s'il n'existe pas encore."""
+        """Dossier proposé par défaut dans les boîtes de dialogue Enregistrer/Ouvrir — le dernier
+        dossier utilisé pour un projet .epbz s'il est connu et existe encore, sinon
+        Documents/Epubeur (créé s'il n'existe pas encore)."""
+        last_dir = get_last_project_dir()
+        if last_dir is not None:
+            return last_dir
         default_dir = Path.home() / "Documents" / "Epubeur"
         default_dir.mkdir(parents=True, exist_ok=True)
         return default_dir
@@ -150,6 +162,7 @@ class MainWindow(QMainWindow):
         # connaître l'état actuel du formulaire.
         self.controller.project.book_metadata = self.generate_panel.collect_metadata()
         if self.controller.save_project_as(epbz_path):
+            set_last_project_dir(epbz_path.parent)
             QMessageBox.information(self, "Enregistrement", "Projet enregistré.")
         # en cas d'échec, error_occurred a déjà déclenché _show_error
 
@@ -160,7 +173,9 @@ class MainWindow(QMainWindow):
             self, "Ouvrir un projet", str(self._default_epbz_dir()), "Projet Epubeur (*.epbz)")
         if not file_str:
             return
-        self.controller.load_project_from(Path(file_str))
+        epbz_path = Path(file_str)
+        set_last_project_dir(epbz_path.parent)
+        self.controller.load_project_from(epbz_path)
         # succès/échec/avertissements sont déjà remontés via error_occurred/warning_occurred
 
     def _open_dropped_epbz(self, path: Path) -> None:

@@ -1,6 +1,8 @@
 import sys
 from pathlib import Path
 
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLabel, QPushButton, QTextEdit, QVBoxLayout
 
 from model.version import __version__
@@ -10,11 +12,19 @@ COPYRIGHT_NOTICE = "Copyright 2026 Bruno Aublet"
 
 def _license_path() -> Path:
     """Localise le fichier LICENSE aussi bien en développement (racine du dépôt) qu'une fois
-    compilé — en mode onedir, PyInstaller place les fichiers déclarés dans datas= (epubeur.spec)
-    au même niveau que l'exe, pas besoin de sys._MEIPASS (propre au mode onefile)."""
+    compilé — sys._MEIPASS est le dossier où PyInstaller extrait/place les fichiers déclarés
+    dans datas= (epubeur.spec), que ce soit en onedir (_internal/) ou en onefile (dossier temp)."""
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent / "LICENSE"
+        return Path(sys._MEIPASS) / "LICENSE"
     return Path(__file__).parent.parent / "LICENSE"
+
+
+def _splash_image_path() -> Path:
+    """Localise Icons/Epubeur.png — même image que le splash screen de démarrage (main.py),
+    même logique de résolution de chemin que _license_path ci-dessus."""
+    if getattr(sys, "frozen", False):
+        return Path(sys._MEIPASS) / "Icons" / "Epubeur.png"
+    return Path(__file__).parent.parent / "Icons" / "Epubeur.png"
 
 
 class AboutDialog(QDialog):
@@ -24,15 +34,23 @@ class AboutDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("À propos d'Epubeur")
-        self.resize(400, 200)
+        self.resize(400, 420)
 
         layout = QVBoxLayout(self)
+
+        image_label = QLabel(self)
+        pixmap = QPixmap(str(_splash_image_path()))
+        if not pixmap.isNull():
+            image_label.setPixmap(pixmap.scaledToWidth(256, Qt.TransformationMode.SmoothTransformation))
+        image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(image_label)
+
         layout.addWidget(QLabel(f"<b>Epubeur</b> — version {__version__}"))
         layout.addWidget(QLabel("Convertit des manuscrits LibreOffice Writer (.odt) en EPUB."))
         layout.addWidget(QLabel(COPYRIGHT_NOTICE))
         layout.addWidget(QLabel("Distribué sous licence GNU GPL v3."))
 
-        license_btn = QPushButton("Voir la licence…")
+        license_btn = QPushButton("Voir la licence")
         license_btn.clicked.connect(self._show_license)
         layout.addWidget(license_btn)
 

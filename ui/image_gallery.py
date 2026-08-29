@@ -3,7 +3,6 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QDragEnterEvent, QDropEvent, QPixmap
 from PySide6.QtWidgets import (
-    QComboBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -20,6 +19,7 @@ from PySide6.QtWidgets import (
 from controller import ProjectController
 from model.assets import AssetRole
 from model.document import ImageDisplaySize, ImageWrap, iter_all_paragraphs
+from ui.no_scroll_combo import NoScrollComboBox
 
 THUMB_SIZE = 96
 ALT_TEXT_EDIT_HEIGHT = 60  # QTextEdit compact (~3 lignes) : une description peut être une phrase
@@ -255,7 +255,7 @@ class _ImageBlock(QWidget):
 
         size_row = QHBoxLayout()
         size_row.addWidget(QLabel("Taille d'affichage :"))
-        self.size_combo = QComboBox()
+        self.size_combo = NoScrollComboBox()
         for size, label in SIZE_LABELS.items():
             self.size_combo.addItem(label, size)
         self.size_combo.setCurrentIndex(list(SIZE_LABELS.keys()).index(current_size))
@@ -266,7 +266,7 @@ class _ImageBlock(QWidget):
 
         wrap_row = QHBoxLayout()
         wrap_row.addWidget(QLabel("Habillage du texte :"))
-        self.wrap_combo = QComboBox()
+        self.wrap_combo = NoScrollComboBox()
         for wrap, label in WRAP_LABELS.items():
             self.wrap_combo.addItem(label, wrap)
         self.wrap_combo.setCurrentIndex(list(WRAP_LABELS.keys()).index(current_wrap))
@@ -392,7 +392,7 @@ class ImageGallery(QWidget):
 
         global_row = QHBoxLayout()
         global_row.addWidget(QLabel("Appliquer une taille à toutes les images :"))
-        self.global_size_combo = QComboBox()
+        self.global_size_combo = NoScrollComboBox()
         for size, label in SIZE_LABELS.items():
             self.global_size_combo.addItem(label, size)
         # Doit correspondre à la valeur par défaut réelle d'une image (ImageDisplaySize.FULL,
@@ -408,7 +408,7 @@ class ImageGallery(QWidget):
 
         global_wrap_row = QHBoxLayout()
         global_wrap_row.addWidget(QLabel("Appliquer un habillage à toutes les images :"))
-        self.global_wrap_combo = QComboBox()
+        self.global_wrap_combo = NoScrollComboBox()
         for wrap, label in WRAP_LABELS.items():
             self.global_wrap_combo.addItem(label, wrap)
         self.global_wrap_combo.setCurrentIndex(list(WRAP_LABELS.keys()).index(ImageWrap.NONE))

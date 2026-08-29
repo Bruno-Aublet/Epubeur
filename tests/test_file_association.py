@@ -93,9 +93,10 @@ def test_writes_registry_when_frozen_on_windows(monkeypatch):
 
     ensure_epbz_association()
 
-    assert fake.set_value_calls == 2  # progid + extension mapping
+    assert fake.set_value_calls == 3  # progid + icône + extension mapping
     assert fake.values[r"Software\Classes\.epbz"] == "Epubeur.Project"
     assert fake.values[r"Software\Classes\Epubeur.Project\shell\open\command"] == r'"C:\Epubeur\Epubeur.exe" "%1"'
+    assert fake.values[r"Software\Classes\Epubeur.Project\DefaultIcon"] == r"C:\Epubeur\Icons\Epubeur.ico"
 
 
 def test_idempotent_second_call_writes_nothing(monkeypatch):

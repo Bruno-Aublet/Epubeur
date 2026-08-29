@@ -2,12 +2,31 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QLibraryInfo, QLocale, QTranslator
-from PySide6.QtWidgets import QApplication
+from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtWidgets import QApplication, QSplashScreen
 
 from model.file_association import ensure_epbz_association
 from ui.main_window import MainWindow
 
 DEFAULT_FONT_POINT_SIZE = 11
+
+
+def _icons_dir() -> Path:
+    """Localise le dossier Icons/ aussi bien en développement (racine du dépôt) qu'une fois
+    compilé — même logique que ui/about_dialog.py::_license_path pour LICENSE."""
+    if getattr(sys, "frozen", False):
+        return Path(sys._MEIPASS) / "Icons"
+    return Path(__file__).parent / "Icons"
+
+
+def _window_icon_path() -> Path:
+    """Icône de fenêtre (barre de titre) — Epubeur.ico."""
+    return _icons_dir() / "Epubeur.ico"
+
+
+def _splash_image_path() -> Path:
+    """Image du splash screen de démarrage — Epubeur.png."""
+    return _icons_dir() / "Epubeur.png"
 
 
 def epbz_argument(argv: list[str]) -> Path | None:
@@ -28,6 +47,12 @@ def main():
     # model/recent_files.py pour stocker les listes Projets/Fichiers récents.
     app.setOrganizationName("Epubeur")
     app.setApplicationName("Epubeur")
+    app.setWindowIcon(QIcon(str(_window_icon_path())))
+
+    splash = QSplashScreen(QPixmap(str(_splash_image_path())))
+    splash.show()
+    app.processEvents()
+
     ensure_epbz_association()
 
     # Sans ça, les boutons standards (Oui/Non/Annuler/OK) des QMessageBox et les menus
@@ -50,6 +75,7 @@ def main():
         window.controller.load_project_from(epbz_path)
 
     window.show()
+    splash.finish(window)
     sys.exit(app.exec())
 
 

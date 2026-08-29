@@ -104,7 +104,7 @@ class CoverColumn(QVBoxLayout):
         self.addWidget(self.technical_label)
 
         buttons_row = QHBoxLayout()
-        self.browse_btn = QPushButton("Parcourir…")
+        self.browse_btn = QPushButton("Parcourir")
         self.browse_btn.clicked.connect(lambda: parent_widget._browse(on_file_dropped))
         buttons_row.addWidget(self.browse_btn)
         self.remove_btn = QPushButton("Retirer")

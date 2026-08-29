@@ -17,9 +17,10 @@ def _load() -> dict:
         data = json.loads(_recent_files_path().read_text(encoding="utf-8"))
         data.setdefault("recent_projects", [])
         data.setdefault("recent_files", [])
+        data.setdefault("last_project_dir", None)
         return data
     except Exception:
-        return {"recent_projects": [], "recent_files": []}
+        return {"recent_projects": [], "recent_files": [], "last_project_dir": None}
 
 
 def _save(data: dict) -> None:
@@ -71,6 +72,22 @@ def remove_recent_project(path: Path) -> None:
 def remove_recent_file(path: Path) -> None:
     data = _load()
     data["recent_files"] = [e for e in data["recent_files"] if e["path"] != str(path)]
+    _save(data)
+
+
+def get_last_project_dir() -> Path | None:
+    """Dernier dossier utilisé pour Enregistrer/Ouvrir un projet .epbz — None si jamais
+    enregistré ou si le dossier n'existe plus (fichier déplacé/disque externe débranché)."""
+    raw = _load()["last_project_dir"]
+    if raw is None:
+        return None
+    path = Path(raw)
+    return path if path.is_dir() else None
+
+
+def set_last_project_dir(directory: Path) -> None:
+    data = _load()
+    data["last_project_dir"] = str(directory)
     _save(data)
 
 

@@ -171,6 +171,7 @@ def document_to_dict(document: Document) -> dict:
         "image_alt_texts": dict(document.image_alt_texts),
         "footnotes": {note_id: [_paragraph_to_dict(p) for p in paras]
                       for note_id, paras in document.footnotes.items()},
+        "known_font_counts": dict(document.known_font_counts),
     }
 
 
@@ -238,7 +239,7 @@ def document_from_dict(d: dict) -> Document:
     footnotes = {note_id: [_paragraph_from_dict(p) for p in paras]
                  for note_id, paras in d.get("footnotes", {}).items()}
 
-    return Document(
+    document = Document(
         chapters=chapters,
         structure=BookStructure(items=items),
         locked_fonts=locked_fonts,
@@ -249,6 +250,19 @@ def document_from_dict(d: dict) -> Document:
         image_alt_texts=image_alt_texts,
         footnotes=footnotes,
     )
+
+    if "known_font_counts" in d:
+        document.known_font_counts = dict(d["known_font_counts"])
+    else:
+        # Projet sauvegardé avant l'introduction de known_font_counts : repli sur un rescan du
+        # modèle pivot (chapters + footnotes) — récupère les polices des runs, mais pas celles
+        # utilisées uniquement dans un titre de chapitre (Chapter.title est une simple chaîne,
+        # jamais scannée). Mieux que rien pour un ancien projet, mais pas parfaitement fidèle
+        # à ce que l'import ODT original avait détecté.
+        from model.font_scan import scan_fonts_in_document
+        document.known_font_counts = dict(scan_fonts_in_document(document))
+
+    return document
 
 
 def _contributor_to_dict(c: Contributor) -> dict:

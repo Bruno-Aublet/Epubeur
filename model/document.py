@@ -240,6 +240,14 @@ class Document:
     # référencée par aucun Run.note_id n'est jamais nettoyée automatiquement ni ne casse le rendu :
     # elle est simplement ignorée (cf. epub/html_render.py, qui ne rend que les notes réellement
     # appelées dans le segment courant).
+    known_font_counts: dict[str, int] = field(default_factory=dict)
+    # Nom de police -> occurrences, tel que détecté à l'import par odt.font_scanner.scan_fonts
+    # (parcours du XML ODT brut, y compris les titres de chapitre — jamais reconstruit à partir
+    # de chapters/footnotes après coup : Chapter.title est une simple chaîne sans police propre,
+    # donc une police utilisée uniquement dans un titre n'existe nulle part ailleurs dans le
+    # modèle pivot. Sans ce stockage explicite, un projet rechargé perdait ces polices de la
+    # liste affichée dans l'onglet Polices — seules les polices figées survivaient, puisque
+    # locked_fonts est, lui, bien persisté).
 
     def image_display_size(self, asset_id: str) -> ImageDisplaySize:
         return self.image_display_sizes.get(asset_id, ImageDisplaySize.FULL)

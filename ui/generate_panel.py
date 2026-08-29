@@ -20,6 +20,7 @@ from model.contributor_roles import CONTRIBUTOR_ROLE_LABELS
 from model.language import LANGUAGE_NAMES_FR
 from model.thema import thema_children, thema_parent_chain
 from ui.metadata_conflict_dialog import MetadataConflictDialog
+from ui.no_scroll_combo import NoScrollComboBox
 
 
 def _derive_file_as(author_name: str) -> str:
@@ -98,7 +99,7 @@ class _ContributorRow(QObject):
         self.name_edit = QLineEdit()
         self.name_edit.setPlaceholderText("ex : Jean-Paul Sartre (prénom puis nom, pas de virgule)")
 
-        self.role_combo = QComboBox()
+        self.role_combo = NoScrollComboBox()
         for code, label in CONTRIBUTOR_ROLE_LABELS.items():
             self.role_combo.addItem(label, code)
 
@@ -173,7 +174,7 @@ class _ThemaRow(QWidget):
         self._add_level("")  # premier menu : les catégories racines
 
     def _add_level(self, parent_code: str) -> None:
-        combo = QComboBox()
+        combo = NoScrollComboBox()
         combo.addItem("(aucun)", "")
         for code, label in thema_children(parent_code):
             combo.addItem(label, code)
@@ -281,14 +282,14 @@ class GeneratePanel(QWidget):
         # dessous du bloc contributeurs, quel que soit son nombre de lignes courant.
         self._contributors_row_index = form.rowCount()
         self._contributor_rows: list[_ContributorRow] = []
-        self.language_combo = QComboBox()
+        self.language_combo = NoScrollComboBox()
         for code, name in sorted(LANGUAGE_NAMES_FR.items(), key=lambda item: item[1]):
             self.language_combo.addItem(name, code)
         self._language_manually_set = False
         self._preselect_default_language()
         self.language_combo.currentIndexChanged.connect(self._mark_language_manually_set)
         form.addRow("Langue :", self.language_combo)
-        self.reading_direction_combo = QComboBox()
+        self.reading_direction_combo = NoScrollComboBox()
         self.reading_direction_combo.addItem("Gauche à droite (standard)", "ltr")
         self.reading_direction_combo.addItem("Droite à gauche (manga, arabe, hébreu…)", "rtl")
         form.addRow("Sens de lecture :", self.reading_direction_combo)

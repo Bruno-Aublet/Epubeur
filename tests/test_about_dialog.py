@@ -15,11 +15,11 @@ def test_license_path_resolves_to_repo_root_in_dev_mode():
 
 def test_license_path_resolves_next_to_exe_when_frozen(monkeypatch):
     monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setattr(sys, "executable", r"C:\Epubeur\Epubeur.exe")
+    monkeypatch.setattr(sys, "_MEIPASS", r"C:\Epubeur\_internal", raising=False)
 
     path = _license_path()
 
-    assert path == Path(r"C:\Epubeur") / "LICENSE"
+    assert path == Path(r"C:\Epubeur\_internal") / "LICENSE"
 
 
 def test_license_file_contains_copyright_notice_and_gpl_text():
@@ -76,7 +76,7 @@ def test_main_window_has_help_menu_with_about_action(qapp):
 
     help_menu = next(a.menu() for a in menu_bar.actions() if a.text() == "Aide")
     action_texts = [a.text() for a in help_menu.actions()]
-    assert "À propos d'Epubeur…" in action_texts
+    assert "À propos d'Epubeur" in action_texts
 
 
 def test_show_about_dialog_does_not_raise(qapp, monkeypatch):

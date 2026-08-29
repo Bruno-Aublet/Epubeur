@@ -4,7 +4,7 @@ import zipfile
 from pathlib import Path
 
 from PySide6.QtCore import QUrl
-from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QPushButton, QStackedWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QStackedWidget, QVBoxLayout, QWidget
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from ebooklib import epub
@@ -12,6 +12,7 @@ from ebooklib import epub
 from controller import ProjectController
 from epub.font_obfuscation import deobfuscate_extracted_epub
 from ui.generate_controls import GenerateControls
+from ui.no_scroll_combo import NoScrollComboBox
 
 _TITLE_RE = re.compile(r"<title>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 
@@ -36,7 +37,7 @@ class EpubPreview(QWidget):
 
         self.content_stack = QStackedWidget()
 
-        self.empty_label = QLabel("Aucun EPUB généré pour l'instant. Cliquez sur « Générer l'EPUB… » ci-dessus.")
+        self.empty_label = QLabel("Aucun EPUB généré pour l'instant. Cliquez sur « Générer l'EPUB » ci-dessus.")
         self.empty_label.setStyleSheet("color: #888;")
         self.content_stack.addWidget(self.empty_label)
 
@@ -45,7 +46,7 @@ class EpubPreview(QWidget):
         reader_layout.setContentsMargins(0, 0, 0, 0)
         toolbar = QHBoxLayout()
         toolbar.addWidget(QLabel("Chapitre :"))
-        self.chapter_combo = QComboBox()
+        self.chapter_combo = NoScrollComboBox()
         toolbar.addWidget(self.chapter_combo, 1)
         self.prev_btn = QPushButton("←")
         self.next_btn = QPushButton("→")

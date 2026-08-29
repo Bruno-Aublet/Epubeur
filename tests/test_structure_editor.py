@@ -280,7 +280,7 @@ def test_context_menu_on_chapter_offers_chapter_actions(qapp):
 
     menu = editor._build_context_menu(chapter_item)
     assert _menu_action_texts(menu) == [
-        "Renommer", "Assigner à une partie…", "Retirer de la partie",
+        "Renommer", "Assigner à une partie", "Retirer de la partie",
         "Fusionner avec le chapitre suivant", "Scinder le chapitre", "Supprimer",
     ]
 

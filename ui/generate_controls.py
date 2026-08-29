@@ -54,7 +54,7 @@ class GenerateControls(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        self.generate_btn = QPushButton("Générer l'EPUB…")
+        self.generate_btn = QPushButton("Générer l'EPUB")
         layout.addWidget(self.generate_btn)
 
         self.status_label = QLabel("")
@@ -84,7 +84,7 @@ class GenerateControls(QWidget):
             output_path = output_path.with_suffix(".epub")
 
         self.generate_btn.setEnabled(False)
-        self.status_label.setText("Génération en cours…")
+        self.status_label.setText("Génération en cours")
 
         self._thread = QThread()
         self._worker = _BuildWorker(self.controller, output_path, metadata)

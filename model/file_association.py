@@ -1,4 +1,5 @@
 import sys
+from pathlib import Path
 
 
 def ensure_epbz_association() -> None:
@@ -16,8 +17,10 @@ def ensure_epbz_association() -> None:
     import winreg
 
     exe_path = sys.executable
+    icon_path = str(Path(exe_path).parent / "Icons" / "Epubeur.ico")
     try:
         _ensure_progid(winreg, exe_path)
+        _ensure_icon(winreg, icon_path)
         _ensure_extension_mapping(winreg)
     except OSError:
         pass
@@ -38,6 +41,14 @@ def _ensure_progid(winreg, exe_path: str) -> None:
         return
     with winreg.CreateKey(winreg.HKEY_CURRENT_USER, command_key) as key:
         winreg.SetValueEx(key, "", 0, winreg.REG_SZ, command)
+
+
+def _ensure_icon(winreg, icon_path: str) -> None:
+    icon_key = r"Software\Classes\Epubeur.Project\DefaultIcon"
+    if _current_default_value(winreg, icon_key) == icon_path:
+        return
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, icon_key) as key:
+        winreg.SetValueEx(key, "", 0, winreg.REG_SZ, icon_path)
 
 
 def _ensure_extension_mapping(winreg) -> None:
