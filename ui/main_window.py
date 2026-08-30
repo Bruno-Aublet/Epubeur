@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from PySide6.QtCore import QUrl
-from PySide6.QtGui import QDesktopServices, QKeySequence
+from PySide6.QtGui import QCloseEvent, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import QFileDialog, QMainWindow, QMessageBox, QTabWidget
 
 from controller import ProjectController
@@ -177,6 +177,12 @@ class MainWindow(QMainWindow):
             QMessageBox.StandardButton.Cancel,
         )
         return reply == QMessageBox.StandardButton.Yes
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if self._confirm_discard_unsaved():
+            event.accept()
+        else:
+            event.ignore()
 
     def _default_epbz_dir(self) -> Path:
         """Dossier proposé par défaut dans les boîtes de dialogue Enregistrer/Ouvrir — le dernier

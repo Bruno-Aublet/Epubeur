@@ -71,6 +71,11 @@ class ProjectController(QObject):
         self._font_counts: dict[str, int] = {}
         self._undo_stack: list = []
         self._redo_stack: list = []
+        # Distinct de _undo_stack : un projet tout juste ouvert depuis un .epbz a des chapitres
+        # ET peut avoir un historique (si le format évolue un jour à charger avec de l'undo),
+        # sans que rien n'ait été modifié depuis l'ouverture — has_unsaved_content ne peut donc
+        # pas se fier uniquement à document.chapters ni à _undo_stack.
+        self._dirty = False
 
         # asset_id copié/coupé (bouton "Copier l'image"/"Couper l'image", depuis l'aperçu
         # Structure OU l'onglet Images — un seul système partagé, ici plutôt que dans un widget
@@ -91,9 +96,11 @@ class ProjectController(QObject):
             clipboard.dataChanged.connect(self._on_clipboard_changed)
 
     def has_unsaved_content(self) -> bool:
-        """Indique s'il y a des chapitres importés ou de l'historique non trivial, pour
-        savoir s'il faut avertir avant de fermer/écraser le projet en cours."""
-        return bool(self.project.document.chapters) or bool(self._undo_stack)
+        """Indique s'il y a des modifications non enregistrées, pour savoir s'il faut avertir
+        avant de fermer/écraser le projet en cours. Un projet tout juste ouvert depuis un .epbz
+        n'est PAS considéré comme non enregistré même s'il contient des chapitres — seul ce qui
+        a changé depuis l'ouverture/le dernier enregistrement compte."""
+        return self._dirty
 
     def _set_temp_assets_dir(self, new_dir: Path) -> None:
         """Remplace _temp_assets_dir par new_dir, en supprimant d'abord l'ancien dossier
@@ -118,12 +125,15 @@ class ProjectController(QObject):
         self._font_counts = {}
         self._undo_stack = []
         self._redo_stack = []
+        self._dirty = False
         self._emit_undo_availability()
 
         self.chapters_changed.emit()
         self.structure_changed.emit()
         self.assets_changed.emit()
         self.fonts_changed.emit()
+        self.project_loaded.emit()  # repeuple (vide) le formulaire Métadonnées, sinon ses
+        # widgets gardent l'ancien texte affiché et un import ultérieur y détecte un faux conflit
 
     def _snapshot_structure(self) -> None:
         """Appelée par le contrôleur juste avant toute action modifiant la structure
@@ -136,6 +146,7 @@ class ProjectController(QObject):
         if len(self._undo_stack) > MAX_UNDO_HISTORY:
             self._undo_stack.pop(0)
         self._redo_stack.clear()
+        self._dirty = True
         self._emit_undo_availability()
 
     def _emit_undo_availability(self) -> None:
@@ -299,6 +310,7 @@ class ProjectController(QObject):
         self.project.source_odt_files.append(entry)
         self._insert_free_chapters_in_alphanumeric_order(entry, [c.id for c in chapters])
         self._backfill_image_alt_texts_from_paragraphs()
+        self._dirty = True
 
         font_counts = scan_fonts(source, resolver)
         for name, count in font_counts.items():
@@ -550,6 +562,7 @@ class ProjectController(QObject):
                 self.project.document.known_font_counts.get(name, 0) + count
             )
 
+        self._dirty = True
         self.chapters_changed.emit()
         self.structure_changed.emit()
         self.assets_changed.emit()
@@ -597,6 +610,7 @@ class ProjectController(QObject):
 
         for f in new_files:
             self._load_font_into_application(f.file_path)
+        self._dirty = True
         self.fonts_changed.emit()
 
         if ignored:
@@ -612,16 +626,19 @@ class ProjectController(QObject):
         bloquera la génération EPUB avec un message clair tant qu'aucun fichier n'est fourni."""
         if self.project.document.locked_font_for_family(family) is None:
             self.project.document.locked_fonts.append(LockedFont(family=family, files=[]))
+        self._dirty = True
         self.fonts_changed.emit()
 
     def unlock_font(self, family: str) -> None:
         self.project.document.locked_fonts = [
             lf for lf in self.project.document.locked_fonts if lf.family != family
         ]
+        self._dirty = True
         self.fonts_changed.emit()
 
     def unlock_all_fonts(self) -> None:
         self.project.document.locked_fonts = []
+        self._dirty = True
         self.fonts_changed.emit()
 
     def is_font_locked(self, family: str) -> bool:
@@ -821,6 +838,7 @@ class ProjectController(QObject):
         if self.project.document.is_asset_referenced(asset_id):
             return
         self.asset_store.remove(asset_id)
+        self._dirty = True
         self.assets_changed.emit()
 
     def _delete_chapter_if_emptied_image_chapter(self, chapter_id: str) -> bool:
@@ -1026,6 +1044,7 @@ class ProjectController(QObject):
         : cette mutation touche asset_store, pas project.document, donc hors de la pile undo
         (même limitation déjà connue pour delete_orphaned_asset)."""
         self.asset_store.rename(asset_id, new_stem)
+        self._dirty = True
         self.assets_changed.emit()
 
     def save_project_as(self, epbz_path: Path) -> bool:
@@ -1038,6 +1057,7 @@ class ProjectController(QObject):
         try:
             save_project_epbz(self.project, self.asset_store, epbz_path)
             self.project.epbz_path = epbz_path
+            self._dirty = False
             add_recent_project(epbz_path)
             self.recent_files_changed.emit()
             return True
@@ -1063,6 +1083,10 @@ class ProjectController(QObject):
             return []
 
         self.project = project
+        self._undo_stack = []
+        self._redo_stack = []
+        self._dirty = False
+        self._emit_undo_availability()
         self._set_temp_assets_dir(extract_dir)
         self.asset_store = AssetStore(extract_dir / "assets")
         if self.asset_store.migrated_on_load:

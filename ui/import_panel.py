@@ -136,6 +136,15 @@ class ImportPanel(QWidget):
         self.list_widget.project_dropped.connect(self.project_dropped)
         self.list_widget.image_dropped.connect(self.controller.add_image_as_chapter)
         self.controller.chapters_changed.connect(self._refresh)
+        # project_loaded : ouverture ET fermeture de projet (close_project l'émet aussi) —
+        # dans les deux cas le contenu précédent est intégralement remplacé, donc cette trace
+        # locale des .epub importés (jamais présente dans project.source_odt_files) doit repartir
+        # de zéro, sinon un ancien nom de fichier reste affiché après "Fermer le projet".
+        self.controller.project_loaded.connect(self._on_project_loaded)
+
+    def _on_project_loaded(self) -> None:
+        self._epub_import_names.clear()
+        self._refresh()
 
     def _handle_dropped_files(self, paths: list[Path]) -> None:
         # setUpdatesEnabled(False) sur toute la fenêtre : chaque import_odt/import_epub_file émet

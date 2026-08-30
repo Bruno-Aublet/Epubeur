@@ -59,12 +59,17 @@ class MetadataConflictDialog(QDialog):
         self.setWindowTitle("Métadonnées différentes détectées")
         self._groups: dict[str, QButtonGroup] = {}
 
+        self.setMinimumWidth(480)
+        self.resize(480, self.height())
+
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(
+        intro_label = QLabel(
             f"Le fichier « {source_file_name} » contient des métadonnées différentes de celles "
-            "déjà renseignées dans l'onglet Générer. Choisissez la valeur à conserver pour "
+            "déjà renseignées dans l'onglet Métadonnées. Choisissez la valeur à conserver pour "
             "chaque champ concerné :"
-        ))
+        )
+        intro_label.setWordWrap(True)
+        layout.addWidget(intro_label)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)

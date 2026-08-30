@@ -1,10 +1,13 @@
 import json
+import re
 import tempfile
 import zipfile
 from pathlib import Path
 
 from model.project import ProjectMeta, SourceOdtFile
 from model.serialization import _build_project_dict, book_metadata_from_dict, document_from_dict
+
+_HASH_FONT_NAME_RE = re.compile(r"^[0-9a-f]{64}\.[A-Za-z0-9]+$")
 
 
 def save_project_epbz(project: ProjectMeta, asset_store, epbz_path: Path) -> None:
@@ -20,8 +23,8 @@ def save_project_epbz(project: ProjectMeta, asset_store, epbz_path: Path) -> Non
         for f in asset_store.root.rglob("*"):
             if f.is_file():
                 zf.write(f, arcname=str(Path("assets") / f.relative_to(asset_store.root)))
-        for sha256, source_path in font_copy_list:
-            zf.write(source_path, arcname=f"fonts/{sha256}{source_path.suffix}")
+        for arcname, source_path in font_copy_list:
+            zf.write(source_path, arcname=arcname)
     tmp_path.replace(epbz_path)
 
 
@@ -58,6 +61,17 @@ def load_project_epbz(epbz_path: Path) -> tuple[ProjectMeta, Path, list[str]]:
                 f.file_path = str(extract_dir / f.file_path)
             if f.file_path and not Path(f.file_path).exists():
                 warnings.append(f"Fichier de police figée introuvable pour « {lf.family} » : {f.file_path}")
+            elif f.file_path and _HASH_FONT_NAME_RE.match(Path(f.file_path).name):
+                # Projet .epbz sauvegardé avant que le fichier de police ne soit nommé
+                # lisiblement dans le zip (nom d'origine perdu, jamais stocké nulle part) —
+                # aucun nom lisible n'est inventé ici : on signale juste le fichier concerné,
+                # à re-choisir manuellement via le bouton « Figer cette police » (onglet Police
+                # de caractères) pour qu'il retrouve son vrai nom.
+                warnings.append(
+                    f"La police figée « {lf.family} » a été enregistrée par un ancien Epubeur "
+                    "sous un nom de fichier technique — re-sélectionnez son fichier dans l'onglet "
+                    "Police de caractères pour qu'il retrouve son vrai nom."
+                )
 
     book_metadata = book_metadata_from_dict(data.get("book_metadata", {}))
 

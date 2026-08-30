@@ -334,21 +334,20 @@ def book_metadata_from_dict(d: dict) -> BookMetadata:
 def _build_project_dict(project: ProjectMeta) -> tuple[dict, list[tuple[str, Path]]]:
     """Construit le dict JSON du projet, prêt à être écrit par model/epbz.py (le seul format de
     sauvegarde restant — cf. model.epbz.save_project_epbz). Retourne aussi la liste des polices
-    figées à copier dans le .epbz (sha256, chemin_absolu_source) : chaque LockedFontFile dont
+    figées à copier dans le .epbz (arcname, chemin_absolu_source) : chaque LockedFontFile dont
     file_path est un chemin ABSOLU existant sur disque est réécrit dans le dict en
-    "fonts/<sha256>.<ext>" (même convention de nommage par hash de contenu que
-    AssetStore.ingest_bytes, pour la même raison de dédup/stabilité) — la copie physique des
-    octets est à la charge de l'appelant, cette fonction reste pure (aucune I/O de police ici, à
-    part le hash lui-même qui doit lire le fichier)."""
+    "fonts/<nom-lisible>.<ext>" — le VRAI nom de fichier de la police (même logique que
+    AssetStore pour les images : jamais un nom de fichier physique dérivé du hash, cf.
+    [[project_image_rename_physical_file]]). Le hash sha256 sert uniquement à dédoublonner deux
+    LockedFontFile au contenu identique (ex. Bold pointé vers une copie du même fichier que
+    Regular) sans les copier deux fois dans le zip — la copie physique des octets est à la
+    charge de l'appelant, cette fonction reste pure (aucune I/O de police ici, à part le hash et
+    l'existence du fichier)."""
     import hashlib
 
     font_copy_list: list[tuple[str, Path]] = []
-    # Dédoublonne par arcname (sha256 + extension) : deux LockedFontFile distincts peuvent
-    # pointer vers des fichiers au contenu identique (ex. l'utilisateur pointe volontairement
-    # Bold vers une copie du même fichier que Regular) — sans ceci, save_project_epbz écrivait
-    # deux fois la même entrée dans le zip (UserWarning: Duplicate name), gaspillant de l'espace
-    # sans perte fonctionnelle (les deux LockedFontFile retrouvent un chemin valide au rechargement).
     seen_arcnames: set[str] = set()
+    arcname_by_sha256: dict[str, str] = {}
     document_dict = document_to_dict(project.document)
     for lf in document_dict["locked_fonts"]:
         for f in lf["files"]:
@@ -359,10 +358,19 @@ def _build_project_dict(project: ProjectMeta) -> tuple[dict, list[tuple[str, Pat
             if not source_path.is_absolute() or not source_path.exists():
                 continue
             sha256 = hashlib.sha256(source_path.read_bytes()).hexdigest()
-            f["file_path"] = f"fonts/{sha256}{source_path.suffix}"
-            if f["file_path"] not in seen_arcnames:
-                seen_arcnames.add(f["file_path"])
-                font_copy_list.append((sha256, source_path))
+            if sha256 in arcname_by_sha256:
+                f["file_path"] = arcname_by_sha256[sha256]
+                continue
+            candidate = source_path.name
+            suffix = 2
+            while f"fonts/{candidate}" in seen_arcnames:
+                candidate = f"{source_path.stem}-{suffix}{source_path.suffix}"
+                suffix += 1
+            arcname = f"fonts/{candidate}"
+            seen_arcnames.add(arcname)
+            arcname_by_sha256[sha256] = arcname
+            f["file_path"] = arcname
+            font_copy_list.append((arcname, source_path))
 
     data = {
         "format_version": FORMAT_VERSION,

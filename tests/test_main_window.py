@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QMessageBox
 
 from model.document import Chapter
@@ -23,6 +24,7 @@ def test_confirm_discard_unsaved_true_when_nothing_to_lose(qapp):
 def test_confirm_discard_unsaved_prompts_and_respects_cancel(qapp, monkeypatch):
     window = MainWindow()
     window.controller.project.document.add_chapter(Chapter.create(title="Un chapitre"))
+    window.controller._dirty = True
     assert window.controller.has_unsaved_content()
 
     monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Cancel)
@@ -32,15 +34,35 @@ def test_confirm_discard_unsaved_prompts_and_respects_cancel(qapp, monkeypatch):
 def test_confirm_discard_unsaved_prompts_and_respects_yes(qapp, monkeypatch):
     window = MainWindow()
     window.controller.project.document.add_chapter(Chapter.create(title="Un chapitre"))
+    window.controller._dirty = True
 
     monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)
     assert window._confirm_discard_unsaved() is True
+
+
+def test_close_event_ignored_when_unsaved_and_cancelled(qapp, monkeypatch):
+    window = MainWindow()
+    window.controller.project.document.add_chapter(Chapter.create(title="Un chapitre"))
+    window.controller._dirty = True
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Cancel)
+    event = QCloseEvent()
+    window.closeEvent(event)
+    assert event.isAccepted() is False
+
+
+def test_close_event_accepted_when_nothing_unsaved(qapp):
+    window = MainWindow()
+    event = QCloseEvent()
+    window.closeEvent(event)
+    assert event.isAccepted() is True
 
 
 def test_open_project_guard_blocks_load_when_cancelled(qapp, monkeypatch, tmp_path):
     window = MainWindow()
     original_chapter = Chapter.create(title="Chapitre existant")
     window.controller.project.document.add_chapter(original_chapter)
+    window.controller._dirty = True
 
     monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Cancel)
 
@@ -146,6 +168,7 @@ def test_open_recent_project_guard_blocks_load_when_cancelled(qapp, monkeypatch,
     window = MainWindow()
     original_chapter = Chapter.create(title="Chapitre existant")
     window.controller.project.document.add_chapter(original_chapter)
+    window.controller._dirty = True
     epbz_path = tmp_path / "recent.epbz"
     epbz_path.write_bytes(b"fake zip")
 

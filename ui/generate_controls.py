@@ -55,12 +55,23 @@ class GenerateControls(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
 
         self.generate_btn = QPushButton("Générer l'EPUB")
+        self.generate_btn.setStyleSheet("font-size: 14pt; padding: 6px 16px;")
         layout.addWidget(self.generate_btn)
 
         self.status_label = QLabel("")
+        self.status_label.setStyleSheet("font-size: 14pt;")
         layout.addWidget(self.status_label, 1)
 
         self.generate_btn.clicked.connect(self._on_generate_clicked)
+        # Sinon un statut "EPUB généré : ..." ou "Échec : ..." d'un projet précédent reste
+        # affiché après "Fermer le projet" (close_project émet aussi project_loaded).
+        self.controller.project_loaded.connect(lambda: self.status_label.setText(""))
+        self.controller.project_loaded.connect(self._update_generate_enabled)
+        self.controller.chapters_changed.connect(self._update_generate_enabled)
+        self._update_generate_enabled()
+
+    def _update_generate_enabled(self) -> None:
+        self.generate_btn.setEnabled(bool(self.controller.project.document.chapters))
 
     def _default_output_dir(self) -> str:
         """Propose par défaut le dossier des fichiers .odt sources, pas un dossier arbitraire."""
@@ -104,11 +115,11 @@ class GenerateControls(QWidget):
         self._thread.start()
 
     def _on_finished(self, output_path: str) -> None:
-        self.generate_btn.setEnabled(True)
+        self._update_generate_enabled()
         self.status_label.setText(f"EPUB généré : {output_path}")
         self.epub_generated.emit(output_path)
 
     def _on_failed(self, message: str) -> None:
-        self.generate_btn.setEnabled(True)
+        self._update_generate_enabled()
         self.status_label.setText(f"Échec : {message}")
         QMessageBox.warning(self, "Génération EPUB", message)

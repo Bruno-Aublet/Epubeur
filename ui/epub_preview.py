@@ -4,7 +4,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import QUrl, Qt
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QStackedWidget, QVBoxLayout, QWidget
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
@@ -39,7 +39,9 @@ class EpubPreview(QWidget):
         self.content_stack = QStackedWidget()
 
         self.empty_label = QLabel("Aucun EPUB généré pour l'instant. Cliquez sur « Générer l'EPUB » ci-dessus.")
-        self.empty_label.setStyleSheet("color: #888;")
+        self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty_label.setWordWrap(True)
+        self.empty_label.setStyleSheet("color: #888; font-size: 18pt;")
         self.content_stack.addWidget(self.empty_label)
 
         self.reader = QWidget()

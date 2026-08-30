@@ -42,6 +42,24 @@ def test_has_unsaved_content_reflects_state(qapp):
     assert controller.has_unsaved_content() is False
 
 
+def test_opening_saved_project_is_not_flagged_unsaved(qapp, tmp_path):
+    """Régression : ouvrir un .epbz déjà enregistré remplit document.chapters, mais rien n'a
+    été modifié depuis l'ouverture — has_unsaved_content() ne doit donc PAS avertir à la
+    fermeture (l'ancienne logique se basait sur bool(document.chapters), toujours vrai après
+    une ouverture)."""
+    controller = ProjectController()
+    controller.import_odt(FIXTURE)
+    epbz_path = tmp_path / "projet.epbz"
+    assert controller.save_project_as(epbz_path) is True
+
+    controller.close_project()
+    assert controller.has_unsaved_content() is False
+
+    controller.load_project_from(epbz_path)
+    assert len(controller.project.document.chapters) == 2
+    assert controller.has_unsaved_content() is False
+
+
 def test_can_import_again_after_close(qapp):
     controller = ProjectController()
     controller.import_odt(FIXTURE)

@@ -84,11 +84,25 @@ def test_roundtrip_preserves_extra_images_on_same_paragraph(tmp_path):
     assert loaded_para.extra_images[0].alt_text == "Seconde"
 
 
+def test_locked_font_file_keeps_real_filename_in_zip(tmp_path):
+    """Le fichier de police figée doit être écrit dans le .epbz sous son vrai nom de fichier
+    source (fonts/MaPolice.ttf), jamais renommé d'après son hash sha256 — même exigence que
+    AssetStore pour les images."""
+    project, asset_store = _make_project_with_image_and_font(tmp_path)
+    epbz_path = tmp_path / "MonRoman.epbz"
+    save_project_epbz(project, asset_store, epbz_path)
+
+    with zipfile.ZipFile(epbz_path) as zf:
+        font_entries = [n for n in zf.namelist() if n.startswith("fonts/")]
+    assert font_entries == ["fonts/MaPolice.ttf"]
+
+
 def test_save_deduplicates_identical_locked_font_files(tmp_path):
     """Régression : deux LockedFontFile différents mais au contenu binaire IDENTIQUE (ex.
     l'utilisateur pointe volontairement Bold vers une copie du même fichier que Regular)
-    produisaient le même arcname "fonts/<sha256>.<ext>" — save_project_epbz écrivait alors deux
-    fois la même entrée dans le zip (UserWarning: Duplicate name, gaspillage d'espace)."""
+    pouvaient produire le même arcname (même nom de fichier source) — save_project_epbz
+    écrivait alors deux fois la même entrée dans le zip (UserWarning: Duplicate name,
+    gaspillage d'espace)."""
     import warnings as warnings_module
 
     asset_store = AssetStore(tmp_path / "assets")

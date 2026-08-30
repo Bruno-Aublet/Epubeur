@@ -255,9 +255,10 @@ def test_locked_font_with_multiple_files_roundtrips(tmp_path):
     assert lf.family == "JMHTypewriter"
     assert len(lf.files) == 2
     by_weight = {f.weight: f for f in lf.files}
-    # Les polices figées sont désormais embarquées dans le .epbz (fonts/<sha256>.<ext>), extraites
-    # dans extract_dir au chargement — le chemin n'est plus l'original externe (voir aussi
-    # test_epbz.py pour la vérification octet-à-octet du contenu embarqué).
+    # Les polices figées sont désormais embarquées dans le .epbz (fonts/<nom-lisible>.<ext>,
+    # nommé d'après le vrai fichier source), extraites dans extract_dir au chargement — le
+    # chemin n'est plus l'original externe (voir aussi test_epbz.py pour la vérification
+    # octet-à-octet du contenu embarqué).
     assert Path(by_weight[400].file_path).read_bytes() == b"regular font bytes"
     assert by_weight[400].italic is False
     assert Path(by_weight[700].file_path).read_bytes() == b"bold font bytes"

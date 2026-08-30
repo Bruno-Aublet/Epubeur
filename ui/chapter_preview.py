@@ -1,8 +1,8 @@
 import re
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, Qt, QUrl
-from PySide6.QtGui import QPainter
+from PySide6.QtCore import QPointF, QRectF, QTimer, Qt, QUrl
+from PySide6.QtGui import QPainter, QPen
 from PySide6.QtWidgets import QFileDialog, QMenu, QTextBrowser
 
 from controller import ProjectController
@@ -51,6 +51,9 @@ class ChapterPreview(QTextBrowser):
         self._chapter_id: str | None = None
         self._page_break_paragraph_indexes: list[int] = []  # un par marqueur affiché, dans l'ordre
         self._eligible_paragraph_block_ranks: dict[int, int] = {}  # rang de bloc Qt -> index dans chapter.paragraphs
+        self._highlighted_marker_rank: int | None = None  # marqueur de saut de page ceinturé d'un cadre pointillé
+        self._highlighted_asset_id: str | None = None  # image ceinturée d'un cadre pointillé
+        self._highlighted_asset_seed_doc_pos = None  # QPointF en coordonnées document, un point connu dans l'image
         self.setReadOnly(True)
         self.setOpenExternalLinks(False)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -74,16 +77,145 @@ class ChapterPreview(QTextBrowser):
     def mousePressEvent(self, event) -> None:
         super().mousePressEvent(event)
         if event.button() == Qt.MouseButton.LeftButton:
-            self.setTextCursor(self.cursorForPosition(event.position().toPoint()))
+            pos = event.position().toPoint()
+            self.setTextCursor(self.cursorForPosition(pos))
             self._cursor_blink_visible = True
+            # Un clic gauche sélectionne visuellement le marqueur de saut de page ou l'image sous
+            # le curseur (cadre pointillé), comme le fait déjà un clic droit avant d'ouvrir son
+            # menu — sans ça, rien ne matérialise "sur quoi on agit" pour un simple clic gauche.
+            self._set_highlight_at(pos)
             self.viewport().update()
+
+    def _set_highlight_at(self, pos) -> None:
+        """Positionne le highlight (cadre pointillé) sur le marqueur de saut de page ou l'image
+        sous `pos` (coordonnées viewport), ou l'efface si `pos` ne tombe sur aucun des deux."""
+        self._highlighted_marker_rank = self._marker_index_at(pos)
+        asset_id = self._asset_id_at(pos) if self._highlighted_marker_rank is None else None
+        self._highlighted_asset_id = asset_id
+        # Un point connu DANS l'image (coordonnées document = viewport + scroll courant), utilisé
+        # par _image_rect() pour retrouver ses bords par expansion locale (cf. son docstring) —
+        # doit survivre à un défilement pendant que le highlight reste actif, d'où des coordonnées
+        # document plutôt que viewport (qui, elles, deviendraient fausses après un scroll).
+        if asset_id is not None:
+            offset_x = self.horizontalScrollBar().value()
+            offset_y = self.verticalScrollBar().value()
+            self._highlighted_asset_seed_doc_pos = QPointF(pos.x() + offset_x, pos.y() + offset_y)
+        else:
+            self._highlighted_asset_seed_doc_pos = None
+
+    def _clear_highlight(self) -> None:
+        self._highlighted_marker_rank = None
+        self._highlighted_asset_id = None
+        self._highlighted_asset_seed_doc_pos = None
 
     def paintEvent(self, event) -> None:
         super().paintEvent(event)
-        if not self._cursor_blink_visible or not self.hasFocus():
+        highlight_rect = self._highlight_rect()
+        show_cursor = self._cursor_blink_visible and self.hasFocus()
+        if highlight_rect is None and not show_cursor:
             return
+        # Un seul QPainter pour tout le paintEvent : deux QPainter successifs sur le même
+        # viewport() (un pour le cadre, un pour le curseur) segfaultaient systématiquement sous
+        # PySide6/Windows — le premier doit visiblement être détruit avant qu'un second ne
+        # s'ouvre sur le même paint device, ce que la portée d'une variable locale ne garantit
+        # pas de façon fiable ici.
         painter = QPainter(self.viewport())
-        painter.fillRect(self.cursorRect(), self.palette().text())
+        if highlight_rect is not None:
+            pen = QPen(self.palette().text().color())
+            pen.setStyle(Qt.PenStyle.DashLine)
+            pen.setWidth(1)
+            painter.setPen(pen)
+            painter.drawRect(highlight_rect.adjusted(1, 1, -2, -2))
+        if show_cursor:
+            painter.fillRect(self.cursorRect(), self.palette().text())
+
+    def _highlight_rect(self):
+        """Rectangle (coordonnées viewport) de l'élément actuellement ceinturé d'un cadre
+        pointillé (marqueur de saut de page ou image), ou None si aucun n'est sélectionné ou si
+        l'élément sélectionné n'existe plus (ex. document rechargé pendant qu'un menu était
+        ouvert)."""
+        if self._highlighted_marker_rank is not None:
+            return self._marker_rect(self._highlighted_marker_rank)
+        if self._highlighted_asset_id is not None:
+            return self._image_rect(self._highlighted_asset_id)
+        return None
+
+    def _marker_rect(self, marker_rank: int):
+        """Rectangle (coordonnées viewport) du bloc marqueur numéro `marker_rank` (0-indexé
+        parmi ceux affichés), ou None s'il n'existe plus (ex. document rechargé sous le menu).
+        cursorRect(QTextCursor) segfaultait de façon systématique lorsqu'appelée depuis
+        paintEvent() (réentrance dans le layout du document pendant un paint en cours, constaté
+        empiriquement sous PySide6/Windows) — on utilise donc blockBoundingRect(), une lecture
+        pure du layout déjà calculé, puis on translate nous-mêmes par le scroll courant au lieu
+        de passer par cursorRect()."""
+        target_rank = 0
+        block = self.document().begin()
+        while block.isValid():
+            if block.text() == PAGE_BREAK_MARKER_TEXT:
+                if target_rank == marker_rank:
+                    block_rect = self.document().documentLayout().blockBoundingRect(block)
+                    offset_x = -self.horizontalScrollBar().value()
+                    offset_y = -self.verticalScrollBar().value()
+                    return block_rect.translated(offset_x, offset_y).toRect()
+                target_rank += 1
+            block = block.next()
+        return None
+
+    def _image_rect(self, asset_id: str):
+        """Rectangle (coordonnées viewport) de l'image `asset_id`, ou None si elle n'apparaît
+        plus dans le chapitre affiché (ou si _highlighted_asset_seed_doc_pos ne tombe plus
+        dedans, ex. le paragraphe a changé de mise en page entre-temps).
+
+        Une image avec habillage gauche/droite (style:wrap ODF -> float CSS, cf.
+        epub/css.py::IMAGE_WRAP_CSS) est retirée du flux inline par le moteur Rich Text de Qt :
+        QTextLine.cursorToX() sur son caractère objet (U+FFFC) renvoie alors une largeur nulle
+        (constaté empiriquement), rendant impossible d'en déduire un rectangle par la position
+        dans le texte comme pour un bloc normal (cf. _marker_rect). QAbstractTextDocumentLayout
+        expose en revanche imageAt(QPointF) -> str (chemin/URL de l'image sous ce point, y
+        compris pour un flottant, en COORDONNÉES DOCUMENT), donc indépendant du flux logique :
+        on retrouve les 4 bords en étendant pixel par pixel depuis un point connu DANS l'image
+        (_highlighted_asset_seed_doc_pos, posé au clic par _set_highlight_at) jusqu'à sortir de
+        cette zone. Un balayage complet du viewport avec imageAt (sans seed) coûterait ~250ms
+        par repaint (mesuré) — bien trop lent pour un curseur qui clignote 2x/seconde — alors que
+        l'expansion locale depuis un point déjà connu ne coûte que quelques dizaines de µs."""
+        if self._highlighted_asset_seed_doc_pos is None:
+            return None
+        layout = self.document().documentLayout()
+        target_path = self.controller.asset_store.path_for(asset_id)
+
+        def image_path_at(doc_x: float, doc_y: float) -> Path | None:
+            image_url = layout.imageAt(QPointF(doc_x, doc_y))
+            if not image_url:
+                return None
+            return Path(QUrl(image_url).toLocalFile())
+
+        seed_x = self._highlighted_asset_seed_doc_pos.x()
+        seed_y = self._highlighted_asset_seed_doc_pos.y()
+        if image_path_at(seed_x, seed_y) != target_path:
+            return None
+
+        # Borne de sécurité : une image de couverture peut légitimement approcher la largeur du
+        # document, mais jamais la dépasser — un garde-fou au cas où imageAt() se comporterait de
+        # façon inattendue évite toute boucle d'expansion anormalement longue.
+        doc_size = self.document().size()
+        max_extent = int(doc_size.width() + doc_size.height()) + 10
+
+        left = seed_x
+        while left > seed_x - max_extent and image_path_at(left - 1, seed_y) == target_path:
+            left -= 1
+        right = seed_x
+        while right < seed_x + max_extent and image_path_at(right + 1, seed_y) == target_path:
+            right += 1
+        top = seed_y
+        while top > seed_y - max_extent and image_path_at(seed_x, top - 1) == target_path:
+            top -= 1
+        bottom = seed_y
+        while bottom < seed_y + max_extent and image_path_at(seed_x, bottom + 1) == target_path:
+            bottom += 1
+
+        offset_x = -self.horizontalScrollBar().value()
+        offset_y = -self.verticalScrollBar().value()
+        return QRectF(left, top, right - left + 1, bottom - top + 1).translated(offset_x, offset_y).toRect()
 
     def show_chapter(self, chapter_id: str | None) -> None:
         # setHtml() reconstruit tout le QTextDocument et remet le scroll à zéro (comportement Qt,
@@ -97,6 +229,7 @@ class ChapterPreview(QTextBrowser):
         self._chapter_id = chapter_id
         self._page_break_paragraph_indexes = []
         self._eligible_paragraph_block_ranks = {}
+        self._clear_highlight()
         if chapter_id is None:
             self.setHtml("")
             return
@@ -324,14 +457,22 @@ class ChapterPreview(QTextBrowser):
     def _show_context_menu(self, pos) -> None:
         marker_rank = self._marker_index_at(pos)
         if marker_rank is not None and self._chapter_id is not None:
+            self._set_highlight_at(pos)
+            self.viewport().update()
             menu = QMenu(self)
             menu.addAction("Supprimer ce saut de page manuel", lambda: self._remove_page_break(marker_rank))
             menu.exec(self.viewport().mapToGlobal(pos))
+            self._clear_highlight()
+            self.viewport().update()
             return
 
         asset_id = self._asset_id_at(pos)
         if asset_id is not None:
+            self._set_highlight_at(pos)
+            self.viewport().update()
             self._show_image_context_menu(asset_id, pos)
+            self._clear_highlight()
+            self.viewport().update()
             return
 
         paragraph_index = self._paragraph_index_at(pos)

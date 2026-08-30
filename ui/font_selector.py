@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont, QFontDatabase
+from PySide6.QtGui import QColor, QFont, QFontDatabase
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -192,6 +192,8 @@ class FontSelector(QWidget):
             if lf is not None:
                 label += f"  [figée, {len(lf.files)} fichier(s)]" if len(lf.files) > 1 else "  [figée]"
             item = QTreeWidgetItem([label])
+            if lf is not None:
+                item.setForeground(0, QColor("green"))
             item.setData(0, 1000, name)
             self.font_tree.addTopLevelItem(item)
 
@@ -228,6 +230,7 @@ class FontSelector(QWidget):
     def _on_selection_changed(self, current: QTreeWidgetItem, _previous) -> None:
         name = self._current_family()
         if name is None:
+            self.preview.setFont(QFont())
             self._update_action_state(None)
             return
         self.preview.setFont(QFont(name, FONT_PREVIEW_POINT_SIZE))

@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.0.3 - 2026-08-30 - Cadre de sélection, badge police figée, onglet aperçu EPUB, nom de police figée, fermeture de projet et confirmation de sortie
+
+- Ajout d'un cadre pointillé autour du saut de page manuel ou de l'image visés par un clic gauche ou droit, pour voir clairement sur quoi on agit avant de le supprimer.
+- Le badge "[figée]" de l'onglet Police de caractères s'affiche désormais en vert pour mieux le repérer.
+- Agrandissement du texte d'invitation et du bouton "Générer l'EPUB" dans l'onglet Aperçu EPUB, trop petits jusqu'ici.
+- Le bouton "Générer l'EPUB" est désormais désactivé tant qu'aucun chapitre n'a été importé.
+- Correction : les fichiers de police figée étaient enregistrés dans le projet .epbz sous un nom technique illisible (leur empreinte de contenu) au lieu de leur vrai nom de fichier.
+- Correction : fermer un projet laissait des résidus de l'ancien projet (formulaire Métadonnées, langue verrouillée, liste d'import EPUB, statut de génération, aperçu de police), ce qui pouvait notamment faire apparaître un faux conflit de métadonnées lors d'un import ODT dans le projet suivant.
+- Correction : un avertissement "modifications non enregistrées" s'affichait à tort en fermant un projet tout juste ouvert et jamais modifié.
+- Ajout : quitter l'application (croix de la fenêtre, Alt+F4, menu) demande désormais confirmation en présence de modifications non enregistrées, comme "Ouvrir un projet".
+
 ## v1.0.2 - 2026-08-29 - Vérification des mises à jour et corrections diverses
 
 - Correction : renommer une image dans l'onglet Images ne renommait que son libellé affiché, jamais le fichier physique correspondant dans le projet .epbz (les projets déjà concernés sont corrigés automatiquement à la prochaine ouverture).

@@ -534,10 +534,18 @@ class GeneratePanel(QWidget):
 
     def _on_project_loaded(self) -> None:
         """Repeuple le formulaire depuis les métadonnées du projet fraîchement chargé
-        (controller.project_loaded, émis par ProjectController.load_project_from) — réutilise
-        apply_metadata (mêmes sémantiques d'écrasement complet que pour un import EPUB, correctes
-        ici puisqu'un chargement de projet remplace tout l'état affiché)."""
+        (controller.project_loaded, émis par ProjectController.load_project_from ET par
+        close_project) — réutilise apply_metadata (mêmes sémantiques d'écrasement complet que
+        pour un import EPUB, correctes ici puisque chargement ET fermeture remplacent tout l'état
+        affiché)."""
         self.apply_metadata(self.controller.project.book_metadata)
+        if self.controller.project.epbz_path is None:
+            # Projet vide (close_project) : book_metadata.language vaut "fr" par défaut, pas une
+            # vraie donnée utilisateur — apply_metadata l'a néanmoins marquée "manuelle" via
+            # _set_language_code (qui préserve ce flag pour les autres appelants). Sans ce reset,
+            # la présélection automatique de langue resterait bloquée après "Fermer le projet",
+            # et un import ODT ultérieur y détecterait un faux conflit.
+            self._language_manually_set = False
 
     def apply_metadata_if_empty(self, metadata: BookMetadata, source_file_name: str = "") -> None:
         """Complète le formulaire avec les propriétés de document lues dans un .odt importé —
