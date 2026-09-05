@@ -877,11 +877,8 @@ def test_left_click_positions_visible_text_cursor(qapp):
     preview.mousePressEvent(event)
 
     assert preview.textCursor().position() == expected
-    # QTextBrowser en lecture seule ne peint jamais le curseur nativement (isReadOnly()==True) —
-    # ChapterPreview le simule via un QTimer de clignotement + paintEvent() surchargé (cf.
-    # __init__). Un clic doit immédiatement rendre le curseur visible (pas attendre le prochain
-    # tick du timer), sinon l'utilisateur ne voit rien tant que le minuteur n'a pas basculé.
-    assert preview._cursor_blink_visible is True
+    # ChapterPreview est éditable (isReadOnly()==False) — Qt peint nativement le curseur
+    # clignotant dès que le widget a le focus, plus besoin de le simuler.
     assert preview.hasFocus()
 
 

@@ -10,6 +10,7 @@ from model.recent_files import (
     add_recent_project,
     get_last_project_dir,
     list_recent_files,
+    list_recent_projects,
     set_last_project_dir,
 )
 from ui.main_window import MainWindow
@@ -21,22 +22,46 @@ def test_confirm_discard_unsaved_true_when_nothing_to_lose(qapp):
     assert window._confirm_discard_unsaved() is True
 
 
+def _click_unsaved_dialog_button(monkeypatch, label: str) -> None:
+    """Simule un clic sur le bouton `label` ("Enregistrer" / "Ne pas enregistrer" / "Annuler")
+    du QMessageBox à 3 boutons construit par _confirm_discard_unsaved."""
+    monkeypatch.setattr(QMessageBox, "exec", lambda self: None)
+    monkeypatch.setattr(
+        QMessageBox,
+        "clickedButton",
+        lambda self: next(b for b in self.buttons() if b.text() == label),
+    )
+
+
 def test_confirm_discard_unsaved_prompts_and_respects_cancel(qapp, monkeypatch):
     window = MainWindow()
     window.controller.project.document.add_chapter(Chapter.create(title="Un chapitre"))
     window.controller._dirty = True
     assert window.controller.has_unsaved_content()
 
-    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Cancel)
+    _click_unsaved_dialog_button(monkeypatch, "Annuler")
     assert window._confirm_discard_unsaved() is False
 
 
-def test_confirm_discard_unsaved_prompts_and_respects_yes(qapp, monkeypatch):
+def test_confirm_discard_unsaved_prompts_and_respects_discard(qapp, monkeypatch):
     window = MainWindow()
     window.controller.project.document.add_chapter(Chapter.create(title="Un chapitre"))
     window.controller._dirty = True
 
-    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)
+    _click_unsaved_dialog_button(monkeypatch, "Ne pas enregistrer")
+    assert window._confirm_discard_unsaved() is True
+
+
+def test_confirm_discard_unsaved_save_button_saves_and_continues(qapp, monkeypatch, tmp_path):
+    window = MainWindow()
+    window.controller.project.document.add_chapter(Chapter.create(title="Un chapitre"))
+    window.controller._dirty = True
+    epbz_path = tmp_path / "projet.epbz"
+    window.controller.project.epbz_path = epbz_path
+
+    _click_unsaved_dialog_button(monkeypatch, "Enregistrer")
+    monkeypatch.setattr(window.controller, "save_project", lambda: True)
+
     assert window._confirm_discard_unsaved() is True
 
 
@@ -45,7 +70,7 @@ def test_close_event_ignored_when_unsaved_and_cancelled(qapp, monkeypatch):
     window.controller.project.document.add_chapter(Chapter.create(title="Un chapitre"))
     window.controller._dirty = True
 
-    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Cancel)
+    _click_unsaved_dialog_button(monkeypatch, "Annuler")
     event = QCloseEvent()
     window.closeEvent(event)
     assert event.isAccepted() is False
@@ -64,7 +89,7 @@ def test_open_project_guard_blocks_load_when_cancelled(qapp, monkeypatch, tmp_pa
     window.controller.project.document.add_chapter(original_chapter)
     window.controller._dirty = True
 
-    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Cancel)
+    _click_unsaved_dialog_button(monkeypatch, "Annuler")
 
     load_calls = []
     monkeypatch.setattr(window.controller, "load_project_from", lambda p: load_calls.append(p))
@@ -172,7 +197,7 @@ def test_open_recent_project_guard_blocks_load_when_cancelled(qapp, monkeypatch,
     epbz_path = tmp_path / "recent.epbz"
     epbz_path.write_bytes(b"fake zip")
 
-    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Cancel)
+    _click_unsaved_dialog_button(monkeypatch, "Annuler")
     load_calls = []
     monkeypatch.setattr(window.controller, "load_project_from", lambda p: load_calls.append(p))
 
@@ -290,4 +315,65 @@ def test_refresh_recent_menus_shows_placeholder_when_empty(qapp):
 
     assert window.recent_projects_menu.actions()[0].text() == "(Aucun projet récent)"
     assert not window.recent_projects_menu.actions()[0].isEnabled()
+    assert window.recent_files_menu.actions()[0].text() == "(Aucun fichier récent)"
+
+    clear_projects_action = window.recent_projects_menu.actions()[-1]
+    assert clear_projects_action.text() == "Vider la liste"
+    assert not clear_projects_action.isEnabled()
+    clear_files_action = window.recent_files_menu.actions()[-1]
+    assert clear_files_action.text() == "Vider la liste"
+    assert not clear_files_action.isEnabled()
+
+
+def test_clear_recent_menu_action_enabled_when_lists_not_empty(qapp, tmp_path):
+    project_path = tmp_path / "roman.epbz"
+    project_path.write_bytes(b"fake")
+    add_recent_project(project_path)
+    epub_path = tmp_path / "roman.epub"
+    epub_path.write_bytes(b"fake")
+    add_recent_file(epub_path, kind="generated")
+
+    window = MainWindow()
+
+    assert window.recent_projects_menu.actions()[-1].isEnabled()
+    assert window.recent_files_menu.actions()[-1].isEnabled()
+
+
+def test_clear_recent_projects_confirmed_empties_list(qapp, monkeypatch, tmp_path):
+    project_path = tmp_path / "roman.epbz"
+    project_path.write_bytes(b"fake")
+    add_recent_project(project_path)
+    window = MainWindow()
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)
+    window._clear_recent_projects()
+
+    assert list_recent_projects() == []
+    assert project_path.exists()
+    assert window.recent_projects_menu.actions()[0].text() == "(Aucun projet récent)"
+
+
+def test_clear_recent_projects_cancelled_keeps_list(qapp, monkeypatch, tmp_path):
+    project_path = tmp_path / "roman.epbz"
+    project_path.write_bytes(b"fake")
+    add_recent_project(project_path)
+    window = MainWindow()
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.No)
+    window._clear_recent_projects()
+
+    assert len(list_recent_projects()) == 1
+
+
+def test_clear_recent_files_confirmed_empties_list(qapp, monkeypatch, tmp_path):
+    epub_path = tmp_path / "roman.epub"
+    epub_path.write_bytes(b"fake")
+    add_recent_file(epub_path, kind="generated")
+    window = MainWindow()
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)
+    window._clear_recent_files()
+
+    assert list_recent_files() == []
+    assert epub_path.exists()
     assert window.recent_files_menu.actions()[0].text() == "(Aucun fichier récent)"

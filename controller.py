@@ -24,6 +24,7 @@ from model.document import (
     LockedFontFile,
     Paragraph,
     Part,
+    Table,
     iter_all_paragraphs,
 )
 from model.epbz import load_project_epbz, save_project_epbz
@@ -101,6 +102,16 @@ class ProjectController(QObject):
         n'est PAS considéré comme non enregistré même s'il contient des chapitres — seul ce qui
         a changé depuis l'ouverture/le dernier enregistrement compte."""
         return self._dirty
+
+    def mark_dirty(self) -> None:
+        """Marque le projet comme ayant des modifications non enregistrées, sans pousser de
+        snapshot sur la pile undo — appelée par ChapterPreview dès la première frappe d'un
+        caractère, avant même que la synchro vers le modèle pivot (et donc le snapshot undo
+        correspondant, cf. _snapshot_structure) n'ait eu lieu. Sans ça, fermer l'app juste après
+        avoir tapé (sans perte de focus préalable) ne déclencherait pas l'avertissement
+        "modifications non enregistrées", puisque _dirty ne dépendait jusqu'ici que de la
+        synchro différée."""
+        self._dirty = True
 
     def _set_temp_assets_dir(self, new_dir: Path) -> None:
         """Remplace _temp_assets_dir par new_dir, en supprimant d'abord l'ancien dossier
@@ -704,6 +715,43 @@ class ProjectController(QObject):
             return  # une Table ne porte jamais de saut de page manuel dans ce modèle
         self._snapshot_structure()
         block.page_break_before = False
+        self.chapters_changed.emit()
+
+    def insert_page_break(self, chapter_id: str, paragraph_index: int) -> None:
+        """Insère un saut de page manuel APRÈS le paragraphe à cet index (celui où se trouvait
+        le curseur au clic sur le bouton) — concrètement, porté par le paragraphe SUIVANT
+        (page_break_before=True dessus), puisque ce champ marque toujours un saut avant le
+        paragraphe qui le porte.
+
+        Si paragraph_index est le DERNIER paragraphe du chapitre, il n'existe aucun paragraphe
+        suivant pour porter le flag : un nouveau Paragraph vide est ajouté en fin de chapitre à
+        cet effet (n'ajoute aucun contenu visible dans l'EPUB généré, seul le passage à un
+        nouveau fichier XHTML — donc typiquement une page blanche en fin de chapitre — compte)."""
+        chapter = self.project.document.chapters.get(chapter_id)
+        if chapter is None or not (0 <= paragraph_index < len(chapter.paragraphs)):
+            return
+        is_last_paragraph = paragraph_index == len(chapter.paragraphs) - 1
+        if not is_last_paragraph:
+            next_block = chapter.paragraphs[paragraph_index + 1]
+            if not isinstance(next_block, Paragraph):
+                return  # une Table ne porte jamais de saut de page manuel dans ce modèle
+        self._snapshot_structure()
+        if is_last_paragraph:
+            chapter.paragraphs.append(Paragraph(page_break_before=True))
+        else:
+            next_block.page_break_before = True
+        self.chapters_changed.emit()
+
+    def apply_edited_paragraphs(self, chapter_id: str, paragraphs: "list[Paragraph | Table]") -> None:
+        """Remplace chapter.paragraphs par le résultat d'une édition de texte dans
+        ChapterPreview (cf. ui/chapter_editor_sync.py::extract_paragraphs_from_document) —
+        appelé uniquement quand le contenu a réellement changé (comparaison déjà faite côté
+        appelant), jamais à chaque frappe."""
+        chapter = self.project.document.chapters.get(chapter_id)
+        if chapter is None:
+            return
+        self._snapshot_structure()
+        chapter.paragraphs = paragraphs
         self.chapters_changed.emit()
 
     def add_image_as_chapter(self, file_path: Path) -> str | None:

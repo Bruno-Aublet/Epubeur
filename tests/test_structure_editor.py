@@ -453,7 +453,10 @@ def test_selection_survives_refresh_after_split_chapter(qapp):
     controller.split_chapter(chapter.id, 1)
 
     assert editor._selected_chapter_id() == chapter.id
-    assert editor.preview_stack.currentWidget() is editor.preview
+    # editor.preview vit dans un conteneur intermédiaire (barre d'outils de formatage +
+    # panneau), pas directement enfant de preview_stack — on vérifie que la page affichée
+    # est bien celle qui contient editor.preview, indépendamment de ce détail de structure.
+    assert editor.preview_stack.currentWidget().isAncestorOf(editor.preview)
 
 
 def test_selection_cleared_after_deleting_selected_chapter(qapp):

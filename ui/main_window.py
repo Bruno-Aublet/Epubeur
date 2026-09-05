@@ -7,6 +7,8 @@ from PySide6.QtWidgets import QFileDialog, QMainWindow, QMessageBox, QTabWidget
 from controller import ProjectController
 from model.recent_files import (
     add_recent_file,
+    clear_recent_files,
+    clear_recent_projects,
     format_recent_timestamp,
     get_last_project_dir,
     list_recent_files,
@@ -100,12 +102,12 @@ class MainWindow(QMainWindow):
         self.undo_action = edit_menu.addAction("Annuler")
         self.undo_action.setShortcut(QKeySequence.StandardKey.Undo)
         self.undo_action.setEnabled(False)
-        self.undo_action.triggered.connect(self.controller.undo)
+        self.undo_action.triggered.connect(self._undo)
 
         self.redo_action = edit_menu.addAction("Rétablir")
         self.redo_action.setShortcut(QKeySequence.StandardKey.Redo)
         self.redo_action.setEnabled(False)
-        self.redo_action.triggered.connect(self.controller.redo)
+        self.redo_action.triggered.connect(self._redo)
 
         self.controller.undo_availability_changed.connect(self._update_undo_actions)
 
@@ -164,19 +166,47 @@ class MainWindow(QMainWindow):
         self.undo_action.setEnabled(can_undo)
         self.redo_action.setEnabled(can_redo)
 
+    def _undo(self) -> None:
+        # Délègue à ChapterPreview, qui applique exactement la même séquence (synchro puis
+        # undo, avec le garde anti-écrasement) — cf. ChapterPreview.perform_undo pour le
+        # détail de pourquoi cette séquence est nécessaire. Ce point d'entrée menu (Edit >
+        # Annuler) n'est en pratique atteint que quand le focus n'est PAS dans ChapterPreview
+        # (Ctrl+Z y est intercepté directement par le panneau avant d'atteindre ce raccourci,
+        # cf. ChapterPreview.keyPressEvent) ; garde toute sa raison d'être pour un clic explicite
+        # sur le menu, ou un focus ailleurs dans l'app.
+        self.structure_editor.preview.perform_undo()
+
+    def _redo(self) -> None:
+        self.structure_editor.preview.perform_redo()
+
     def _confirm_discard_unsaved(self) -> bool:
-        """Retourne True s'il est permis de continuer (rien à perdre, ou confirmé) — factorisé
-        pour être réutilisé par _open_project, _close_project ET le glisser-déposé d'un .epbz
-        (cf. _open_dropped_epbz)."""
+        """Retourne True s'il est permis de continuer (rien à perdre, enregistré, ou perte
+        confirmée) — factorisé pour être réutilisé par _open_project, _open_recent_project,
+        _close_project ET le glisser-déposé d'un .epbz (cf. _open_dropped_epbz). Propose trois
+        choix (Enregistrer / Ne pas enregistrer / Annuler) plutôt qu'une simple confirmation, pour
+        éviter à l'utilisateur d'annuler puis d'enregistrer manuellement avant de refaire son
+        action initiale."""
         if not self.controller.has_unsaved_content():
             return True
-        reply = QMessageBox.question(
-            self, "Projet non enregistré",
-            "Le projet en cours contient des modifications non enregistrées. Continuer quand même ?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Cancel,
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Modifications non enregistrées")
+        box.setText(
+            "Le projet en cours contient des modifications non enregistrées. "
+            "Voulez-vous les enregistrer avant de continuer ?"
         )
-        return reply == QMessageBox.StandardButton.Yes
+        save_button = box.addButton("Enregistrer", QMessageBox.ButtonRole.AcceptRole)
+        discard_button = box.addButton("Ne pas enregistrer", QMessageBox.ButtonRole.DestructiveRole)
+        cancel_button = box.addButton("Annuler", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(save_button)
+        save_button.setStyleSheet("background-color: #2e7d32; color: white;")
+        discard_button.setStyleSheet("background-color: #c62828; color: white;")
+        cancel_button.setStyleSheet("background-color: #9e9e9e; color: black;")
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is save_button:
+            return self._save_project()
+        return clicked is discard_button
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._confirm_discard_unsaved():
@@ -195,6 +225,13 @@ class MainWindow(QMainWindow):
         default_dir.mkdir(parents=True, exist_ok=True)
         return default_dir
 
+    def _sync_before_save(self) -> None:
+        """Capture l'état du formulaire Métadonnées et de l'édition de texte en cours dans le
+        modèle, juste avant une écriture du .epbz — ni l'un ni l'autre n'est synchronisé en
+        continu (cf. ChapterPreview._sync_to_model)."""
+        self.controller.project.book_metadata = self.generate_panel.collect_metadata()
+        self.structure_editor.sync_pending_editor_state()
+
     def _save_project_as(self) -> None:
         file_str, _ = QFileDialog.getSaveFileName(
             self, "Enregistrer le projet", str(self._default_epbz_dir()), "Projet Epubeur (*.epbz)")
@@ -203,15 +240,21 @@ class MainWindow(QMainWindow):
         epbz_path = Path(file_str)
         if epbz_path.suffix.lower() != ".epbz":
             epbz_path = epbz_path.with_suffix(".epbz")
-        # Le formulaire de l'onglet Métadonnées (titre, auteur, ISBN...) n'est jamais synchronisé
-        # en continu avec le projet — capturé explicitement ici, juste avant l'écriture du .epbz,
-        # seul moyen pour ProjectController.save_project_as (aucune connaissance de l'UI) de
-        # connaître l'état actuel du formulaire.
-        self.controller.project.book_metadata = self.generate_panel.collect_metadata()
+        self._sync_before_save()
         if self.controller.save_project_as(epbz_path):
             set_last_project_dir(epbz_path.parent)
             QMessageBox.information(self, "Enregistrement", "Projet enregistré.")
         # en cas d'échec, error_occurred a déjà déclenché _show_error
+
+    def _save_project(self) -> bool:
+        """Enregistre le projet dans son fichier .epbz déjà connu, ou bascule sur « Enregistrer
+        sous… » si le projet n'a encore jamais été enregistré. Retourne True si le projet est
+        maintenant enregistré (donc s'il est permis de continuer l'action en attente)."""
+        if self.controller.project.epbz_path is None:
+            self._save_project_as()
+            return self.controller.project.epbz_path is not None and not self.controller.has_unsaved_content()
+        self._sync_before_save()
+        return self.controller.save_project()
 
     def _open_project(self) -> None:
         if not self._confirm_discard_unsaved():
@@ -240,6 +283,10 @@ class MainWindow(QMainWindow):
             label = f"{path.name} — {format_recent_timestamp(entry['timestamp'])}"
             action = self.recent_projects_menu.addAction(label)
             action.triggered.connect(lambda checked=False, p=path: self._open_recent_project(p))
+        self.recent_projects_menu.addSeparator()
+        clear_projects_action = self.recent_projects_menu.addAction("Vider la liste")
+        clear_projects_action.setEnabled(bool(projects))
+        clear_projects_action.triggered.connect(self._clear_recent_projects)
 
         self.recent_files_menu.clear()
         files = list_recent_files()
@@ -251,6 +298,36 @@ class MainWindow(QMainWindow):
             label = f"{path.name} ({verb} {format_recent_timestamp(entry['timestamp'])})"
             action = self.recent_files_menu.addAction(label)
             action.triggered.connect(lambda checked=False, p=path: self._open_recent_file(p))
+        self.recent_files_menu.addSeparator()
+        clear_files_action = self.recent_files_menu.addAction("Vider la liste")
+        clear_files_action.setEnabled(bool(files))
+        clear_files_action.triggered.connect(self._clear_recent_files)
+
+    def _clear_recent_projects(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "Vider la liste",
+            "Vider la liste des projets récents ?\n\nLes projets eux-mêmes ne seront pas supprimés.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        clear_recent_projects()
+        self._refresh_recent_menus()
+
+    def _clear_recent_files(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "Vider la liste",
+            "Vider la liste des fichiers récents ?\n\nLes fichiers eux-mêmes ne seront pas supprimés.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        clear_recent_files()
+        self._refresh_recent_menus()
 
     def _open_recent_project(self, path: Path) -> None:
         if not path.exists():

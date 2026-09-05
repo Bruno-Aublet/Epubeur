@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.1.0 - 2026-09-05 - Édition de texte dans l'onglet Structure
+
+- Le texte d'un chapitre peut désormais être édité directement dans l'onglet Structure : saisie, suppression, copier/couper/coller, mise en forme (gras, italique, souligné, barré, exposant, indice, police, alignement), changement de style de paragraphe (Normal/Citation/Titre), insertion de saut de page manuel et ajout de liens hypertexte, via une nouvelle barre d'outils.
+- Le champ "Genre / mots-clés" du formulaire Métadonnées est renommé "Étiquettes (Tags)" pour correspondre au terme utilisé par Calibre et les liseuses (dc:subject dans l'EPUB généré).
+- Ajout d'une commande "Vider la liste" dans les menus Projets récents et Fichiers récents, avec confirmation, pour réinitialiser ces listes sans supprimer les fichiers eux-mêmes.
+- L'avertissement "modifications non enregistrées" (fermeture, ouverture d'un autre projet, glisser-déposer) propose désormais d'enregistrer directement au lieu d'un simple choix Continuer/Annuler.
+
 ## v1.0.3 - 2026-08-30 - Cadre de sélection, badge police figée, onglet aperçu EPUB, nom de police figée, fermeture de projet et confirmation de sortie
 
 - Ajout d'un cadre pointillé autour du saut de page manuel ou de l'image visés par un clic gauche ou droit, pour voir clairement sur quoi on agit avant de le supprimer.

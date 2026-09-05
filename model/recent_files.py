@@ -85,6 +85,18 @@ def remove_recent_file(path: Path) -> None:
     _save(data)
 
 
+def clear_recent_projects() -> None:
+    data = _load()
+    data["recent_projects"] = []
+    _save(data)
+
+
+def clear_recent_files() -> None:
+    data = _load()
+    data["recent_files"] = []
+    _save(data)
+
+
 def get_last_project_dir() -> Path | None:
     """Dernier dossier utilisé pour Enregistrer/Ouvrir un projet .epbz — None si jamais
     enregistré ou si le dossier n'existe plus (fichier déplacé/disque externe débranché)."""

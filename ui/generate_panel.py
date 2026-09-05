@@ -328,7 +328,7 @@ class GeneratePanel(QWidget):
         form.addRow("Date de publication :", self.date_edit)
         self.subjects_edit = QLineEdit()
         self.subjects_edit.setPlaceholderText("mots-clés séparés par des virgules")
-        form.addRow("Genre / mots-clés :", self.subjects_edit)
+        form.addRow("Étiquettes (Tags) :", self.subjects_edit)
         bisac_row = QHBoxLayout()
         self.bisac_edit = QLineEdit()
         self.bisac_edit.setPlaceholderText("ex : FIC009000 — cherchez le code sur le site officiel BISG")

@@ -1,8 +1,9 @@
+import copy
 import re
 from pathlib import Path
 
-from PySide6.QtCore import QPointF, QRectF, QTimer, Qt, QUrl
-from PySide6.QtGui import QPainter, QPen
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, QUrl
+from PySide6.QtGui import QKeySequence, QPainter, QPen, QTextCursor
 from PySide6.QtWidgets import QFileDialog, QMenu, QTextBrowser
 
 from controller import ProjectController
@@ -10,11 +11,39 @@ from epub.builder import split_chapter_into_segments
 from epub.css import IMAGE_SIZE_RULE_TEMPLATE, IMAGE_WRAP_CSS
 from epub.html_render import paragraphs_to_html, title_html_block
 from model.document import ImageDisplaySize, ImageWrap, Paragraph, Table
+from ui.chapter_editor_sync import (
+    PAGE_BREAK_MARKER_HTML,
+    PAGE_BREAK_MARKER_TEXT,
+    block_contains_image,
+    extract_paragraphs_from_document,
+    normalize_paragraphs_for_comparison,
+)
 from ui.image_gallery import SIZE_LABELS, WRAP_LABELS
+
+# Touches qui modifient le contenu du document si transmises à QTextBrowser.keyPressEvent /
+# inputMethodEvent alors que le curseur est hors d'un bloc éditable (cf. _is_block_editable) —
+# tout le reste (navigation, Ctrl+C, Ctrl+A...) doit rester transmis normalement.
+_EDITING_KEYS = {
+    Qt.Key.Key_Backspace, Qt.Key.Key_Delete, Qt.Key.Key_Return, Qt.Key.Key_Enter,
+    Qt.Key.Key_Tab, Qt.Key.Key_Insert,
+}
 
 # Matche <p></p> aussi bien que <p class="align-center"></p> — un paragraphe vide n'est pas
 # toujours sans attribut (ex. il peut hériter d'un alignement centré/droit/justifié).
 _EMPTY_P_RE = re.compile(r"<p[^>]*></p>")
+
+# epub/html_render.py::ALIGN_CLASS n'exprime l'alignement QUE via une classe CSS (align-justify),
+# correct pour l'EPUB réel (vrai moteur CSS) mais silencieusement IGNORÉ par le moteur Rich Text
+# de Qt pour la valeur "justify" précisément — vérifié empiriquement : `text-align: justify`
+# posé par une règle de <style> (classe ou style inline, peu importe) ne modifie jamais
+# QTextBlockFormat.alignment() (reste Qt.AlignLeft), alors que centré/droite fonctionnent très
+# bien de la même façon. Seul l'attribut HTML natif align="justify" est honoré par Qt. Sans ce
+# correctif, un paragraphe justifié affichait un alignement à gauche dans cet aperçu (bug
+# cosmétique préexistant), ET après l'ajout de l'édition de texte, faisait considérer CHAQUE
+# paragraphe justifié comme "modifié" par extract_paragraphs_from_document (LEFT extrait au lieu
+# de JUSTIFY), déclenchant une réécriture parasite du modèle qui vidait silencieusement
+# redo_stack juste avant que Ctrl+Y ne s'exécute.
+_JUSTIFY_CLASS_RE = re.compile(r'(<(?:p|blockquote)\s+class="[^"]*\balign-justify\b[^"]*")')
 
 # paragraph_to_html émet src="../images/{asset_id}.{ext}" — un chemin relatif valable UNIQUEMENT
 # dans la structure de dossiers du zip EPUB final (text/ + images/ frères). QTextBrowser.setHtml()
@@ -35,15 +64,12 @@ _IMAGE_SRC_RE = re.compile(r'src="\.\./images/([^".]+)\.[^"]+"')
 _IMG_IN_P_RE = re.compile(r"<p([^>]*)>((?:\s*<img[^>]*/>)+)(.*?)</p>", re.DOTALL)
 _SINGLE_IMG_RE = re.compile(r"<img[^>]*/>")
 
-# QTextBrowser (moteur Rich Text de Qt) ignore silencieusement border-top sur <p>/<div> et ne
-# préserve pas la couleur d'un <hr> — seule une couleur de texte est fiablement rendue, d'où ce
-# marqueur textuel plutôt qu'une pure ligne graphique.
-PAGE_BREAK_MARKER_TEXT = "――― Saut de page manuel ―――"
-PAGE_BREAK_MARKER_HTML = f'<p align="center" style="color:#2a6fdb;">{PAGE_BREAK_MARKER_TEXT}</p>'
-
 
 class ChapterPreview(QTextBrowser):
-    """Aperçu en lecture seule du texte formaté d'un chapitre (gras/italique/centré/listes/citations)."""
+    """Éditeur du texte formaté d'un chapitre (gras/italique/centré/listes/citations) — les
+    paragraphes top-level simples (pas de liste, pas de table, pas d'image) sont librement
+    éditables ; le reste (listes, tables, images) garde le comportement précédent : lecture
+    seule + menu contextuel dédié."""
 
     def __init__(self, controller: ProjectController, parent=None):
         super().__init__(parent)
@@ -51,40 +77,241 @@ class ChapterPreview(QTextBrowser):
         self._chapter_id: str | None = None
         self._page_break_paragraph_indexes: list[int] = []  # un par marqueur affiché, dans l'ordre
         self._eligible_paragraph_block_ranks: dict[int, int] = {}  # rang de bloc Qt -> index dans chapter.paragraphs
+        # Capture de chapter.paragraphs (au sens ==, pas d'identité) telle qu'elle était au
+        # dernier show_chapter() complet — permet à _sync_to_model() de détecter qu'une mutation
+        # EXTERNE (menu contextuel image/saut de page, undo/redo...) a modifié le modèle sans
+        # jamais passer par le buffer Qt affiché ici : dans ce cas, le buffer n'a par définition
+        # rien de nouveau à écrire, et une synchro aveugle écraserait la mutation externe avec le
+        # contenu périmé du buffer. None tant qu'aucun chapitre n'a encore été affiché.
+        self._last_known_paragraphs: list | None = None
         self._highlighted_marker_rank: int | None = None  # marqueur de saut de page ceinturé d'un cadre pointillé
         self._highlighted_asset_id: str | None = None  # image ceinturée d'un cadre pointillé
         self._highlighted_asset_seed_doc_pos = None  # QPointF en coordonnées document, un point connu dans l'image
-        self.setReadOnly(True)
+        # Réentrance (cf. _sync_to_model) : empêche show_chapter() de reconstruire le document
+        # depuis un modèle qu'on vient tout juste d'écrire avec exactement ce qui est déjà
+        # affiché — sans ce flag, la synchro émettrait chapters_changed, qui redéclencherait
+        # show_chapter() en boucle.
+        self._syncing_to_model = False
+        # Debounce de la synchro texte -> modèle pivot : redémarré à chaque frappe modifiante
+        # (cf. _on_text_possibly_changed), synchronise au bout de 500ms d'inactivité. Le modèle
+        # pivot ne reste ainsi jamais désynchronisé du texte affiché de plus de 500ms, jamais
+        # dépendant d'une perte de focus — contrairement à l'ancien mécanisme purement différé
+        # (synchro seulement à la perte de focus/changement de chapitre/sauvegarde), qui causait
+        # des bugs en cascade (menu contextuel invisible tant qu'on ne change pas de chapitre,
+        # Ctrl+Z inopérant tant qu'on n'a pas perdu le focus).
+        self._sync_timer = QTimer(self)
+        self._sync_timer.setSingleShot(True)
+        self._sync_timer.setInterval(500)
+        self._sync_timer.timeout.connect(self._sync_to_model)
+        # Posé juste avant controller.undo()/redo() (cf. MainWindow._undo/_redo) : bloque TOUT
+        # appel à _sync_to_model() jusqu'à la prochaine reconstruction de l'affichage, peu
+        # importe qui l'invoque (StructureEditor._on_selection_changed, ou show_chapter()
+        # lui-même quand il autorise la reconstruction sous focus — cf. _show_chapter_impl).
+        # Sans ce garde, le document Qt encore affiché (l'état d'AVANT l'undo, pas encore
+        # reconstruit) serait comparé au modèle qui vient tout juste d'être restauré et
+        # réécrirait dessus l'ancien texte, annulant silencieusement l'undo/redo.
+        self._suppress_sync_once = False
+        self.setReadOnly(False)
+        # L'undo/redo de l'app est géré exclusivement par ProjectController (snapshots du modèle
+        # pivot, cf. controller._snapshot_structure), jamais par le QTextDocument affiché ici —
+        # laisser l'undo interne de Qt activé ferait que Ctrl+Z, tant que ce panneau a le focus,
+        # annule un changement de caractère dans le buffer Qt local SANS jamais toucher au modèle
+        # (aucun effet observable après la prochaine synchro, qui réécrirait le texte "annulé").
+        # Désactivé pour empêcher toute modification via ce mécanisme interne — Ctrl+Z/Ctrl+Y
+        # sont de toute façon interceptés explicitement dans keyPressEvent (cf. perform_undo/
+        # perform_redo), qui appellent directement controller.undo()/redo() sans jamais compter
+        # sur la remontée de l'événement clavier vers le raccourci de menu (elle n'a pas lieu :
+        # un widget de texte Qt avec le focus consomme toujours ces combinaisons en interne,
+        # avant même que setUndoRedoEnabled(False) n'entre en jeu — vérifié empiriquement).
+        self.setUndoRedoEnabled(False)
         self.setOpenExternalLinks(False)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
-        # QTextBrowser en lecture seule (isReadOnly()==True) ne peint JAMAIS le curseur clignotant
-        # dans son viewport, même avec setCursorWidth>0 et un QTextCursor positionné à jour :
-        # Qt conditionne ce rendu en interne à !isReadOnly() (vérifié empiriquement — aucune
-        # combinaison de flags publics ne le réactive). On simule donc le clignotement nous-mêmes :
-        # un QTimer qui bascule _cursor_blink_visible et déclenche un repaint ciblé sur le seul
-        # rectangle du curseur (viewport().update(rect), pas tout le viewport).
-        self._cursor_blink_visible = True
-        self._cursor_blink_timer = QTimer(self)
-        self._cursor_blink_timer.setInterval(500)
-        self._cursor_blink_timer.timeout.connect(self._toggle_cursor_blink)
-        self._cursor_blink_timer.start()
-
-    def _toggle_cursor_blink(self) -> None:
-        self._cursor_blink_visible = not self._cursor_blink_visible
-        self.viewport().update(self.cursorRect())
 
     def mousePressEvent(self, event) -> None:
         super().mousePressEvent(event)
         if event.button() == Qt.MouseButton.LeftButton:
             pos = event.position().toPoint()
-            self.setTextCursor(self.cursorForPosition(pos))
-            self._cursor_blink_visible = True
+            # super().mousePressEvent() a déjà positionné le curseur normalement (mode éditable) ;
+            # on ne le repositionne nous-mêmes que si la cible n'est pas éditable (marqueur/image),
+            # pour ne pas perturber le placement natif d'une sélection en cours de glisser.
+            if not self._is_position_editable(pos):
+                self.setTextCursor(self.cursorForPosition(pos))
             # Un clic gauche sélectionne visuellement le marqueur de saut de page ou l'image sous
             # le curseur (cadre pointillé), comme le fait déjà un clic droit avant d'ouvrir son
             # menu — sans ça, rien ne matérialise "sur quoi on agit" pour un simple clic gauche.
             self._set_highlight_at(pos)
             self.viewport().update()
+
+    def mouseMoveEvent(self, event) -> None:
+        super().mouseMoveEvent(event)
+        pos = event.position().toPoint()
+        cursor_shape = Qt.CursorShape.IBeamCursor if self._is_position_editable(pos) else Qt.CursorShape.ArrowCursor
+        self.viewport().setCursor(cursor_shape)
+
+    def keyPressEvent(self, event) -> None:
+        # Ctrl+Z/Ctrl+Y : QTextBrowser (comme n'importe quel widget de texte Qt) intercepte et
+        # CONSOMME ces combinaisons dans son propre keyPressEvent interne dès qu'il a le focus —
+        # y compris avec setUndoRedoEnabled(False) (qui désactive seulement la modification du
+        # document, pas la consommation de l'événement clavier lui-même). Un widget avec focus
+        # prime TOUJOURS sur les QAction de la fenêtre pour ces touches, quel que soit leur
+        # ShortcutContext (vérifié empiriquement) — l'action de menu "Annuler" ne se déclenche
+        # donc jamais tant que ce panneau a le focus, peu importe la logique de synchro derrière.
+        # On appelle donc directement ici l'équivalent de MainWindow._undo()/_redo() (synchro
+        # puis controller.undo()/redo(), avec le même garde anti-écrasement), sans jamais
+        # transmettre l'événement à Qt.
+        if event.matches(QKeySequence.StandardKey.Undo):
+            self.perform_undo()
+            return
+        if event.matches(QKeySequence.StandardKey.Redo):
+            self.perform_redo()
+            return
+        # Ctrl+Z/Ctrl+Y (et toute combinaison Ctrl/Meta+lettre, ex. Ctrl+B) ont un event.text()
+        # NON VIDE et IMPRIMABLE sous Qt/Windows (ex. 'z' pour Ctrl+Z) — sans cette exclusion,
+        # elles seraient classées à tort comme une frappe de texte normale par le test suivant.
+        # Seules les touches SANS aucun modificateur de commande peuvent être une vraie frappe.
+        has_command_modifier = bool(event.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier))
+        is_editing_key = not has_command_modifier and (
+            event.key() in _EDITING_KEYS or (event.text() and event.text().isprintable())
+        )
+        if is_editing_key:
+            if not self._is_selection_editable(self.textCursor()):
+                return
+            super().keyPressEvent(event)
+            self._on_text_possibly_changed()
+            return
+        super().keyPressEvent(event)
+
+    def perform_undo(self) -> None:
+        """Point d'entrée public pour Ctrl+Z — appelé directement par keyPressEvent quand ce
+        panneau a le focus (contournant l'interception native de Qt), et par
+        MainWindow._undo() (menu Edit > Annuler) pour tout autre contexte. Synchronise la frappe
+        en attente pour qu'elle devienne annulable, bloque toute resynchro pendant TOUTE la
+        cascade de signaux que controller.undo() va émettre (cf. suppress_sync_until_next_
+        reconstruction et son relâchement explicite ci-dessous), puis annule."""
+        self.sync_pending_edits()
+        self.suppress_sync_until_next_reconstruction()
+        try:
+            self.controller.undo()
+        finally:
+            # Relâché ici, explicitement, une seule fois — PAS par show_chapter() (cf. son
+            # commentaire) : controller.undo() émet chapters_changed/structure_changed/
+            # fonts_changed/assets_changed à la suite, chacun pouvant redéclencher
+            # StructureEditor.refresh() -> show_chapter() plusieurs fois pour cette seule
+            # opération. Relâcher trop tôt (dès le premier show_chapter() de la cascade)
+            # laissait les suivants sans protection, permettant une resynchro qui écrasait le
+            # undo qui venait de réussir.
+            self._suppress_sync_once = False
+
+    def perform_redo(self) -> None:
+        """Symétrique de perform_undo pour Ctrl+Y/Ctrl+Maj+Z."""
+        self.sync_pending_edits()
+        self.suppress_sync_until_next_reconstruction()
+        try:
+            self.controller.redo()
+        finally:
+            self._suppress_sync_once = False
+
+    def inputMethodEvent(self, event) -> None:
+        # Saisie IME (accents composés, méthodes de saisie CJK...) ne passe pas par
+        # keyPressEvent — même garde nécessaire ici pour empêcher toute modification hors d'un
+        # bloc éditable.
+        if not self._is_selection_editable(self.textCursor()):
+            return
+        super().inputMethodEvent(event)
+        self._on_text_possibly_changed()
+
+    def _on_text_possibly_changed(self) -> None:
+        """Appelée après toute frappe/IME/glisser-déposer qui a pu modifier le texte affiché —
+        marque le projet non enregistré immédiatement (pas seulement à la synchro différée, cf.
+        controller.mark_dirty) et (re)démarre le debounce de synchro vers le modèle pivot."""
+        self.controller.mark_dirty()
+        self._sync_timer.start()
+
+    def dragEnterEvent(self, event) -> None:
+        if not self._is_selection_editable(self.textCursor()):
+            event.ignore()
+            return
+        super().dragEnterEvent(event)
+
+    def dropEvent(self, event) -> None:
+        # Qt propose par défaut un déplacement de texte sélectionné par glisser — bloqué si la
+        # cible du dépôt tombe hors d'un bloc éditable (la source l'est nécessairement déjà,
+        # cf. dragEnterEvent, mais la cible doit être vérifiée séparément).
+        target_cursor = self.cursorForPosition(event.position().toPoint())
+        if not self._is_block_editable(target_cursor.block()):
+            event.ignore()
+            return
+        super().dropEvent(event)
+        self._on_text_possibly_changed()
+
+    def focusOutEvent(self, event) -> None:
+        # Un menu contextuel (clic droit) ou un dialogue ouvert depuis la barre d'outils (lien...)
+        # font perdre puis retrouver le focus sans intention réelle de l'utilisateur de "sortir"
+        # du panneau — Qt distingue ce cas via event.reason(), pas de synchro/snapshot dans ce cas.
+        if event.reason() != Qt.FocusReason.PopupFocusReason:
+            self._sync_to_model()
+        super().focusOutEvent(event)
+
+    def sync_pending_edits(self) -> None:
+        """Point d'entrée public : force la synchronisation vers le modèle de toute édition en
+        attente, sans attendre le débounce ou une perte de focus — appelé avant un changement de
+        chapitre sélectionné, avant une sauvegarde de projet, ou avant undo()/redo() (cf.
+        StructureEditor, MainWindow)."""
+        self._sync_to_model()
+
+    def suppress_sync_until_next_reconstruction(self) -> None:
+        """Point d'entrée public : bloque tout appel à _sync_to_model() jusqu'à la prochaine
+        reconstruction de l'affichage (show_chapter, qui relâche le flag après coup) — à
+        appeler juste APRÈS avoir synchronisé une édition en attente (sync_pending_edits) mais
+        AVANT controller.undo()/redo() (cf. MainWindow._undo/_redo). Nécessaire car
+        chapters_changed (émis par undo()/redo()) redéclenche show_chapter() sous focus, qui
+        tente lui-même une resynchro (cf. _show_chapter_impl) : sans ce garde, elle comparerait
+        le document Qt ENCORE affiché (l'état d'avant l'undo) au modèle qui vient d'être
+        restauré, et réécrirait dessus le texte que l'undo était censé annuler."""
+        self._suppress_sync_once = True
+
+    def _sync_to_model(self) -> None:
+        # Arrête le débounce en cours : _sync_to_model() peut désormais être appelée depuis deux
+        # origines concurrentes (expiration du timer, ou appel direct via sync_pending_edits()
+        # avant un focus perdu/changement de sélection/sauvegarde/undo-redo) — évite un tir en
+        # double du timer juste après un appel direct (optimisation ; même sans stop(), un
+        # second tir serait un no-op grâce à la comparaison new_paragraphs == chapter.paragraphs
+        # ci-dessous).
+        self._sync_timer.stop()
+        if self._chapter_id is None or self._syncing_to_model or self._suppress_sync_once:
+            return
+        chapter = self.controller.project.document.chapters.get(self._chapter_id)
+        if chapter is None:
+            return
+        # chapter.paragraphs a pu être modifié AILLEURS dans l'app (menu contextuel image/saut
+        # de page, undo/redo, scission/fusion de chapitre...) depuis le dernier show_chapter()
+        # complet, sans jamais passer par le buffer Qt affiché ici — dans ce cas, le buffer n'a
+        # par construction rien de nouveau à écrire (l'utilisateur n'a rien tapé depuis), et le
+        # comparer au nouveau chapter.paragraphs les trouverait à tort différents (le modèle a
+        # changé, pas le buffer), écrasant la mutation externe avec le contenu périmé du buffer.
+        # _last_known_paragraphs (capturé à la dernière reconstruction complète) permet de
+        # distinguer les deux cas : si le modèle a bougé depuis sans notre concours, on abandonne
+        # la synchro — le show_chapter() qui suit (déclenché par le même chapters_changed/
+        # assets_changed externe, cf. StructureEditor.refresh) reconstruit et reflète l'état à
+        # jour, sans jamais passer par cette synchro.
+        if chapter.paragraphs != self._last_known_paragraphs:
+            return
+        new_paragraphs = extract_paragraphs_from_document(
+            self.document(), chapter.paragraphs, self._eligible_paragraph_block_ranks,
+        )
+        if new_paragraphs == normalize_paragraphs_for_comparison(chapter.paragraphs):
+            return
+        self._syncing_to_model = True
+        try:
+            self.controller.apply_edited_paragraphs(self._chapter_id, new_paragraphs)
+        finally:
+            self._syncing_to_model = False
+        # apply_edited_paragraphs() émet chapters_changed, absorbé par _syncing_to_model dans
+        # show_chapter() (qui retourne donc sans reconstruire ni recapturer l'instantané) — mis
+        # à jour ici explicitement pour que la prochaine synchro compare au bon état de
+        # référence, pas à celui d'avant cette écriture.
+        self._last_known_paragraphs = new_paragraphs
 
     def _set_highlight_at(self, pos) -> None:
         """Positionne le highlight (cadre pointillé) sur le marqueur de saut de page ou l'image
@@ -110,24 +337,18 @@ class ChapterPreview(QTextBrowser):
 
     def paintEvent(self, event) -> None:
         super().paintEvent(event)
+        # Le curseur clignotant est désormais peint nativement par Qt (mode éditable,
+        # isReadOnly()==False) — seul le cadre pointillé (marqueur de saut de page / image
+        # sélectionnée) reste à peindre manuellement ici.
         highlight_rect = self._highlight_rect()
-        show_cursor = self._cursor_blink_visible and self.hasFocus()
-        if highlight_rect is None and not show_cursor:
+        if highlight_rect is None:
             return
-        # Un seul QPainter pour tout le paintEvent : deux QPainter successifs sur le même
-        # viewport() (un pour le cadre, un pour le curseur) segfaultaient systématiquement sous
-        # PySide6/Windows — le premier doit visiblement être détruit avant qu'un second ne
-        # s'ouvre sur le même paint device, ce que la portée d'une variable locale ne garantit
-        # pas de façon fiable ici.
         painter = QPainter(self.viewport())
-        if highlight_rect is not None:
-            pen = QPen(self.palette().text().color())
-            pen.setStyle(Qt.PenStyle.DashLine)
-            pen.setWidth(1)
-            painter.setPen(pen)
-            painter.drawRect(highlight_rect.adjusted(1, 1, -2, -2))
-        if show_cursor:
-            painter.fillRect(self.cursorRect(), self.palette().text())
+        pen = QPen(self.palette().text().color())
+        pen.setStyle(Qt.PenStyle.DashLine)
+        pen.setWidth(1)
+        painter.setPen(pen)
+        painter.drawRect(highlight_rect.adjusted(1, 1, -2, -2))
 
     def _highlight_rect(self):
         """Rectangle (coordonnées viewport) de l'élément actuellement ceinturé d'un cadre
@@ -217,7 +438,49 @@ class ChapterPreview(QTextBrowser):
         offset_y = -self.verticalScrollBar().value()
         return QRectF(left, top, right - left + 1, bottom - top + 1).translated(offset_x, offset_y).toRect()
 
-    def show_chapter(self, chapter_id: str | None) -> None:
+    def show_chapter(self, chapter_id: str | None, force: bool = False) -> None:
+        # Réentrance : ChapterPreview vient lui-même d'écrire ce contenu dans le modèle (cf.
+        # _sync_to_model) — reconstruire depuis ce qu'on vient d'en extraire serait un travail
+        # inutile, et surtout casserait la position du curseur en cours d'édition.
+        if self._syncing_to_model:
+            return
+        # _suppress_sync_once N'EST PLUS relâché ici (contrairement à avant) : controller.undo()/
+        # redo() émettent QUATRE signaux à la suite (chapters_changed, structure_changed,
+        # fonts_changed, assets_changed), chacun connecté à StructureEditor.refresh() ->
+        # show_chapter() — donc show_chapter() est appelée PLUSIEURS FOIS en cascade pour un seul
+        # undo()/redo(). Relâcher le flag dès le premier appel laissait les suivants sans
+        # protection : le 2e/3e appel de la cascade retombait sur une resynchro non bloquée, qui
+        # écrasait le undo/redo qui venait tout juste de réussir avec le contenu périmé du buffer
+        # Qt — undo_stack/redo_stack finissaient identiques à leur état d'AVANT l'opération,
+        # rendant Ctrl+Z/Ctrl+Y invisibles en apparence. Le flag est maintenant relâché une seule
+        # fois, explicitement, par perform_undo()/perform_redo() APRÈS que controller.undo()/
+        # redo() ait fini d'émettre tous ses signaux.
+        self._show_chapter_impl(chapter_id, force)
+
+    def _show_chapter_impl(self, chapter_id: str | None, force: bool) -> None:
+        # Arrête tout débounce en attente AVANT la éventuelle synchro/reconstruction ci-dessous :
+        # _sync_timer a pu être démarré par une frappe (cf. _on_text_possibly_changed) et n'être
+        # stoppé QUE par _sync_to_model() — jamais par une reconstruction complète (setHtml() un
+        # peu plus bas). Sans cet arrêt explicite ici, un timer resté actif après un undo/redo
+        # (ex. frappé juste avant le Ctrl+Z, jamais nettoyé par la restauration) pouvait se
+        # déclencher tout seul PLUS TARD, hors de toute protection _suppress_sync_once (déjà
+        # relâchée à ce moment) — sa synchro comparait alors un buffer Qt qui n'était plus
+        # d'actualité, écrivait dessus un _snapshot_structure() parasite, et vidait
+        # silencieusement redo_stack (ou undo_stack) entre deux opérations undo/redo qui
+        # semblaient pourtant réussies individuellement.
+        self._sync_timer.stop()
+        if not force and chapter_id == self._chapter_id and self._chapter_id is not None:
+            # Même chapitre déjà affiché, pas de reconstruction forcée explicitement demandée :
+            # synchroniser d'abord une éventuelle frappe en attente (no-op silencieux sinon, ou
+            # si une mutation externe a déjà rendu la synchro invalide — cf. _sync_to_model),
+            # PUIS reconstruire dans tous les cas. Reconstruire n'est pas coûteux pour l'usage
+            # (le scroll est déjà préservé par le code de reconstruction ci-dessous via
+            # same_chapter) et c'est le seul moyen fiable de refléter toute mutation externe qui
+            # ne touche pas chapter.paragraphs — ex. set_image_display_size()/set_image_wrap()
+            # (onglet Images), qui changent le rendu HTML sans jamais passer par les paragraphes
+            # eux-mêmes (comparer seulement chapter.paragraphs manquerait ce cas).
+            self._sync_to_model()
+
         # setHtml() reconstruit tout le QTextDocument et remet le scroll à zéro (comportement Qt,
         # pas de setter dédié) — sans ça, toute action déclenchant refresh() pendant qu'on regarde
         # un chapitre (ex. clic droit > "Insérer une image ici") fait remonter la vue tout en haut
@@ -231,12 +494,23 @@ class ChapterPreview(QTextBrowser):
         self._eligible_paragraph_block_ranks = {}
         self._clear_highlight()
         if chapter_id is None:
+            self._last_known_paragraphs = None
             self.setHtml("")
             return
         chapter = self.controller.project.document.chapters.get(chapter_id)
         if chapter is None:
+            self._last_known_paragraphs = None
             self.setHtml("")
             return
+        # Instantané de chapter.paragraphs tel qu'il est AU MOMENT de cette reconstruction — sert
+        # de référence à _sync_to_model() pour détecter une mutation externe survenue depuis (cf.
+        # son champ, définition ligne ~66). deepcopy() est nécessaire ici, pas juste list() : des
+        # mutations comme controller.remove_page_break()/insert_page_break() modifient un
+        # Paragraph EN PLACE (block.page_break_before = ...) sans jamais recréer d'objet — un
+        # simple list(chapter.paragraphs) partagerait les mêmes instances de Paragraph, rendant
+        # toute comparaison ultérieure aveugle à ce type de mutation externe (déjà pris en
+        # défaut : une copie superficielle "voyait" la mutation en même temps que le modèle).
+        self._last_known_paragraphs = copy.deepcopy(chapter.paragraphs)
 
         # Le nom des classes n'a ici aucune importance : QTextBrowser ignore les classes CSS
         # (seul le style inline compte, cf. inline_locked_font_style=True ci-dessous), donc
@@ -334,6 +608,7 @@ class ChapterPreview(QTextBrowser):
                 for segment in segments
             ),
         )
+        body = _JUSTIFY_CLASS_RE.sub(r'\1 align="justify"', body)
         body = self._resolve_image_paths(body)
         body = self._isolate_images(body)
 
@@ -446,13 +721,59 @@ class ChapterPreview(QTextBrowser):
         """Retourne l'index dans chapter.paragraphs du paragraphe top-level (texte simple ou
         image) sous `pos`, si éligible pour insérer/supprimer une image, sinon None. S'appuie
         sur _eligible_paragraph_block_ranks, peuplé dans show_chapter()."""
-        cursor = self.cursorForPosition(pos)
+        return self._eligible_paragraph_index_for_block(self.cursorForPosition(pos).block())
+
+    def _eligible_paragraph_index_for_block(self, block) -> int | None:
         block_rank = 0
-        block = self.document().begin()
-        while block.isValid() and block != cursor.block():
+        cursor_block = self.document().begin()
+        while cursor_block.isValid() and cursor_block != block:
             block_rank += 1
-            block = block.next()
+            cursor_block = cursor_block.next()
         return self._eligible_paragraph_block_ranks.get(block_rank)
+
+    def _is_block_editable(self, block) -> bool:
+        """Vrai ssi ce bloc Qt correspond à un Paragraph top-level simple ET que ce bloc précis
+        ne PORTE PAS lui-même une image — un paragraphe texte+image (sans habillage) est scindé
+        par _isolate_images en plusieurs blocs Qt distincts (un bloc par image, un bloc texte
+        séparé, cf. show_chapter) : seul le bloc-image reste non éditable (son interaction passe
+        par le menu contextuel dédié, insérer/copier/couper/supprimer), le bloc-texte du MÊME
+        paragraphe reste librement éditable, même si Paragraph.all_images() est non vide.
+        Une image AVEC habillage (gauche/droite) reste dans le même <p> que le texte (jamais
+        isolée, cf. _isolate_images) : le bloc entier est alors exclu, faute de pouvoir séparer
+        proprement l'un de l'autre dans ce cas."""
+        if self._chapter_id is None:
+            return False
+        index = self._eligible_paragraph_index_for_block(block)
+        if index is None:
+            return False
+        chapter = self.controller.project.document.chapters.get(self._chapter_id)
+        if chapter is None or not (0 <= index < len(chapter.paragraphs)):
+            return False
+        item = chapter.paragraphs[index]
+        if not isinstance(item, Paragraph):
+            return False
+        images = item.all_images()
+        if not images:
+            return True
+        any_wrapped = any(
+            self.controller.project.document.image_wrap(img.asset_id) != ImageWrap.NONE for img in images
+        )
+        if any_wrapped:
+            return False  # image non isolée, mêlée au texte dans le même bloc : tout le bloc exclu
+        return not block_contains_image(block)
+
+    def _is_position_editable(self, pos) -> bool:
+        return self._is_block_editable(self.cursorForPosition(pos).block())
+
+    def _is_selection_editable(self, cursor: QTextCursor) -> bool:
+        """Vrai ssi toute la sélection (ou la position du curseur si pas de sélection) tombe à
+        l'intérieur d'un seul bloc éditable — une sélection qui déborde sur un marqueur, une
+        image, une liste ou une table n'est jamais éditable, même partiellement."""
+        start_block = self.document().findBlock(cursor.selectionStart())
+        end_block = self.document().findBlock(cursor.selectionEnd())
+        if start_block != end_block:
+            return False
+        return self._is_block_editable(start_block)
 
     def _show_context_menu(self, pos) -> None:
         marker_rank = self._marker_index_at(pos)

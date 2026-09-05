@@ -587,7 +587,18 @@ def test_controller_odt_metadata_found_signal_only_fills_empty_fields(qapp, monk
 
 # --- Persistance de BookMetadata dans le projet (.epbz) ---
 
-def test_new_project_book_metadata_matches_empty_form(qapp):
+def test_new_project_book_metadata_matches_empty_form(qapp, monkeypatch):
+    # _preselect_default_language() (ui/generate_panel.py) lit QLocale.system() pour présélectionner
+    # la langue du formulaire — sous QT_QPA_PLATFORM=offscreen (forcé par tests/conftest.py pour toute
+    # la suite, nécessaire pour lancer les tests sans afficher de fenêtres), QLocale.system() ne
+    # reflète PAS la vraie locale Windows (vérifié : elle retombe sur en_US même quand Windows est
+    # réellement en fr-FR, confirmé via l'API Win32 GetUserDefaultLocaleName et le registre). Sans ce
+    # monkeypatch, ce test dépendrait de la locale système ET du mode Qt (offscreen ou non) au lieu de
+    # tester uniquement le comportement de GeneratePanel — figé ici sur "fr" pour être déterministe
+    # indépendamment de la machine/l'environnement d'exécution.
+    from PySide6.QtCore import QLocale
+    monkeypatch.setattr(QLocale, "system", staticmethod(lambda: QLocale("fr_FR")))
+
     controller = ProjectController()
     panel = GeneratePanel(controller)
 

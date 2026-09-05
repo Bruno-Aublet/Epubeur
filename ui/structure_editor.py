@@ -23,6 +23,7 @@ from model.document import Chapter, Part
 from model.text_utils import natural_sort_key
 from ui.chapter_preview import ChapterPreview
 from ui.chapter_rename_dialog import ChapterRenameDialog
+from ui.chapter_toolbar import ChapterFormatToolbar
 from ui.chapter_split_dialog import ChapterSplitDialog
 from ui.cover_image_preview import CoverImagePreview
 from ui.import_panel import dispatch_odt_import
@@ -135,10 +136,17 @@ class StructureEditor(QWidget):
         splitter.addWidget(self.tree)
 
         self.preview = ChapterPreview(controller)
+        self.format_toolbar = ChapterFormatToolbar(controller, self.preview)
+        self._preview_container = QWidget()
+        preview_container_layout = QVBoxLayout(self._preview_container)
+        preview_container_layout.setContentsMargins(0, 0, 0, 0)
+        preview_container_layout.addWidget(self.format_toolbar)
+        preview_container_layout.addWidget(self.preview, 1)
+
         self.part_title_page_preview = PartTitlePagePreview()
         self.cover_image_preview = CoverImagePreview()
         self.preview_stack = QStackedWidget()
-        self.preview_stack.addWidget(self.preview)
+        self.preview_stack.addWidget(self._preview_container)
         self.preview_stack.addWidget(self.part_title_page_preview)
         self.preview_stack.addWidget(self.cover_image_preview)
         splitter.addWidget(self.preview_stack)
@@ -294,6 +302,12 @@ class StructureEditor(QWidget):
         if not ok:
             return
         self.controller.create_part(title)
+
+    def sync_pending_editor_state(self) -> None:
+        """Force la synchronisation vers le modèle de toute édition de texte en attente dans
+        ChapterPreview — appelé avant une sauvegarde de projet (cf. MainWindow._save_project_as),
+        pour ne jamais enregistrer un .epbz sans le texte tapé juste avant."""
+        self.preview.sync_pending_edits()
 
     def select_chapter(self, chapter_id: str) -> None:
         """Sélectionne et affiche le chapitre donné dans l'arbre — pour une navigation
@@ -536,6 +550,20 @@ class StructureEditor(QWidget):
         menu.exec(self.tree.viewport().mapToGlobal(pos))
 
     def _on_selection_changed(self) -> None:
+        # Synchronise toute édition de texte en attente AVANT de changer de chapitre affiché
+        # dans ChapterPreview — sinon un clic direct de l'éditeur vers l'arbre pourrait perdre
+        # le texte en cours (l'ordre entre le traitement de la sélection et focusOutEvent n'est
+        # pas garanti). Seulement si le chapitre affiché va RÉELLEMENT changer : cette méthode
+        # est aussi appelée par refresh() pour un chapters_changed qui laisse la sélection
+        # inchangée (ex. undo()/redo(), ou toute mutation du modèle courant) — y synchroniser
+        # quand même comparerait le document Qt encore affiché (pas reconstruit) à un modèle qui
+        # vient de changer sous ses pieds pour une tout autre raison, et réécrirait dessus
+        # l'ancien contenu affiché, annulant silencieusement la mutation qui vient d'avoir lieu
+        # (constaté avec Ctrl+Z : le undo semblait ne rien faire). show_chapter() (ligne 584)
+        # gère seul et correctement la reconstruction dans ce cas, sans synchro préalable.
+        if self._selected_chapter_id() != self.preview._chapter_id:
+            self.preview.sync_pending_edits()
+
         cover_kind = self._selected_cover_kind()
         if cover_kind is not None:
             document = self._document()
@@ -559,7 +587,7 @@ class StructureEditor(QWidget):
                 self.part_title_page_preview.show_no_title_page()
             self.preview_stack.setCurrentWidget(self.part_title_page_preview)
             return
-        self.preview_stack.setCurrentWidget(self.preview)
+        self.preview_stack.setCurrentWidget(self._preview_container)
         self.preview.show_chapter(self._selected_chapter_id())
 
     def _on_item_changed(self, item: QTreeWidgetItem, column: int) -> None:
